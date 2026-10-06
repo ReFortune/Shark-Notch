@@ -1729,8 +1729,10 @@ impl App {
         }
         // Shell deadlines (peek expiry, staggered actions) when nothing is animating.
         if !self.animating() && self.shell.next_deadline().is_some_and(|d| d <= now) {
+            let before = self.shell.presence();
             self.shell.step(now);
-            if self.animating() {
+            // A change that ends instantly (reduced motion) still has to be *drawn* once.
+            if self.animating() || self.shell.presence() != before {
                 self.kick("auto");
             }
         }

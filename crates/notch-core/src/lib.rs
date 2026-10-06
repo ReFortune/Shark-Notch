@@ -17,6 +17,7 @@ pub mod geom;
 pub mod hotkey;
 pub mod hover;
 pub mod icons;
+pub mod ics;
 pub mod image;
 pub mod input;
 pub mod module;

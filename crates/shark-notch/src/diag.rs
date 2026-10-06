@@ -102,6 +102,8 @@ pub struct SelfTest {
     shelf_dir: Option<std::path::PathBuf>,
     /// `Notification` events seen before the notification act in progress.
     notif_mark: u32,
+    /// Frames presented when the summary banner was checked.
+    frames_mark: u64,
     /// Cycles per second of a busy core (calibrated), for tick-free CPU percentages.
     cycles_hz: f64,
     warm_idle: Option<(f64, f64)>,     // (cpu %, private MiB)
@@ -421,6 +423,7 @@ pub fn begin(a: &mut App) {
         shelf_mark: (0, 0),
         shelf_dir: None,
         notif_mark: 0,
+        frames_mark: 0,
         cycles_hz: sys::cycles_per_sec(),
         warm_idle: None,
         released_idle: None,
@@ -1036,17 +1039,28 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
                 "notifications: back from the game, presence {:?}; the summary banner says what was missed: {said}",
                 a.shell.presence()
             ));
+            st.frames_mark = a.frames_presented;
             if a.shell.presence() != Presence::Peek || !said {
                 st.fail("notifications: no \"while you were away\" summary after returning from fullscreen".into());
             }
         }
         Act::NotifChipCheck => {
             let (presence, text) = (a.shell.presence(), drawn_text(a));
+            let frame = a.shell.frame();
             a.maybe_release_gpu(now);
             let kept = a.stage.is_some();
             st.say(format!(
                 "notifications: summary tucked away (presence {presence:?}); the missed-count badge is drawn: {}; GPU kept while the badge shows: {kept}",
                 text.iter().any(|t| t == "2")
+            ));
+            st.say(format!(
+                "notifications: {} frame(s) were presented since the summary banner; pill {:.0}x{:.0} DIP, chip alpha {:.2}, content {:?}, animating {}",
+                a.frames_presented - st.frames_mark,
+                frame.shape.w,
+                frame.shape.h,
+                frame.chip_alpha,
+                frame.content_kind,
+                a.animating()
             ));
             if presence != Presence::Collapsed {
                 st.fail("notifications: the summary banner did not tuck itself away".into());

@@ -501,9 +501,12 @@ impl Shell {
     /// Advance to monotonic time `t` (seconds). `t` should be the *display* time of the frame being
     /// prepared (see [`crate::frame::sample_time`]).
     pub fn step(&mut self, t: f64) {
+        // Pending actions first: one that *starts* an animation out of idle (a peek expiring) re-bases
+        // the clock to `t` (see `wake`). Measuring `dt` before it would apply seconds of idle time to
+        // the freshly retargeted springs and the animation would jump instead of play.
+        self.run_pending(t);
         let dt = (t - self.t_last).max(0.0) as f32;
         self.t_last = self.t_last.max(t);
-        self.run_pending(t);
         for s in [
             &mut self.w,
             &mut self.h,
@@ -1051,6 +1054,44 @@ mod tests {
             s.step(t);
         }
         assert_eq!(s.presence(), Presence::Collapsed);
+    }
+
+    #[test]
+    fn a_peek_expiring_after_a_long_idle_gap_plays_its_collapse() {
+        let mut s = shell();
+        s.peek(0.0, 7, Size::new(320.0, 64.0), 2.0);
+        let mut t = 0.0;
+        while t < 1.0 {
+            t += DT;
+            s.step(t);
+        }
+        assert!(!s.animating(), "nothing moves while the banner is up");
+        // The loop sleeps until the deadline, then steps once - seconds after the previous frame.
+        s.step(2.0);
+        assert_eq!(s.presence(), Presence::Collapsed);
+        assert!(s.animating(), "the collapse still has to be drawn");
+        assert!(
+            s.frame().shape.w > 300.0,
+            "the banner has not jumped to the pill in that one step: {}",
+            s.frame().shape.w
+        );
+        assert!(
+            s.frame().content > 0.9,
+            "its content fades out over the next frames instead of vanishing at once: {}",
+            s.frame().content
+        );
+        let mut t = 2.0;
+        let mut frames = 0;
+        while s.animating() && frames < 600 {
+            t += DT;
+            s.step(t);
+            frames += 1;
+        }
+        assert!(
+            (10..200).contains(&frames),
+            "it plays over a realistic number of frames: {frames}"
+        );
+        assert!(s.frame().shape.w < 130.0, "and ends as the pill");
     }
 
     #[test]
