@@ -50,8 +50,9 @@ pub fn fill_polygons(polys: &[Vec<Vec2>], w: usize, h: usize) -> Coverage {
                 }
             }
             xs.sort_by(|a, b| a.total_cmp(b));
-            for pair in xs.chunks_exact(2) {
-                add_span(&mut acc, pair[0], pair[1], 1.0 / SUB as f32);
+            let (pairs, _) = xs.as_chunks::<2>();
+            for [x0, x1] in pairs {
+                add_span(&mut acc, *x0, *x1, 1.0 / SUB as f32);
             }
         }
         for (x, a) in acc.iter().enumerate() {

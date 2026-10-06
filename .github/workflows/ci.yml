@@ -56,17 +56,18 @@ jobs:
         run: cargo build --release -p shark-notch
       - name: Tests (core + app)
         run: cargo test -p notch-core -p shark-notch
-      - name: Clippy (app)
-        run: cargo clippy -p shark-notch --all-targets -- -D warnings
       - name: Self-test (real window, D3D11/D2D/DirectComposition, scripted animations)
         shell: pwsh
         if: ${{ hashFiles('crates/shark-notch/src/diag.rs') != '' }}
+        timeout-minutes: 4
         run: |
           $out = Join-Path $PWD "selftest.txt"
           $p = Start-Process -FilePath ".\target\release\shark-notch.exe" -ArgumentList "--selftest","--out",$out -PassThru -Wait -NoNewWindow
           Write-Host "exit code: $($p.ExitCode)"
           if (Test-Path $out) { Get-Content $out } else { Write-Host "no selftest output produced" }
           exit $p.ExitCode
+      - name: Clippy (app)
+        run: cargo clippy -p shark-notch --all-targets -- -D warnings
       - uses: actions/upload-artifact@v4
         if: always()
         with:
