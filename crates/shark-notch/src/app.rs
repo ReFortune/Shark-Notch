@@ -106,7 +106,8 @@ struct WinWaker;
 
 impl Waker for WinWaker {
     fn wake(&self) {
-        inbox::wake();
+        // The bus coalesces already; see `inbox::post_wake` for why this must not coalesce again.
+        inbox::post_wake();
     }
 }
 
@@ -1785,8 +1786,11 @@ impl App {
     }
 
     fn drain_inbox(&mut self) {
+        // Take the mailbox first (this re-arms its wake-up), then the bus: an event or message that
+        // arrives from here on posts a fresh wake-up instead of being assumed handled.
+        let msgs = inbox::drain();
         self.pump_bus();
-        for msg in inbox::drain() {
+        for msg in msgs {
             match msg {
                 Msg::Config(Ok(l)) => self.apply_config(l),
                 Msg::Config(Err(e)) => {
@@ -1880,6 +1884,11 @@ impl App {
                 self.sched.set(T_CFG_RELOAD, now + 0.25);
             }
             Signal::None => {}
+        }
+        // A safety net for the wake-up message: whatever woke the loop, take events that are
+        // waiting (a no-op unless the bus says something arrived).
+        if self.bus.has_pending() {
+            self.pump_bus();
         }
         self.run_timers(now);
         if self.animating() && (self.stage.is_none() || now < self.frame_block_until) {

@@ -14,6 +14,10 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use crate::events::{Event, EventKind, Source};
 
 /// Wakes the UI thread (on Windows: `PostMessageW`). Called from producer threads.
+///
+/// The bus calls it once per drain cycle. An implementation must **not** coalesce again on its own
+/// with a flag of its own: two independent "already pending" flags can each assume the other will
+/// cause a drain, and the wake-up is lost.
 pub trait Waker: Send + Sync {
     fn wake(&self);
 }
@@ -54,6 +58,11 @@ impl Bus {
             },
             BusSender { tx, waker, pending },
         )
+    }
+
+    /// Has anything been sent since the last drain? (Cheap: one atomic load.)
+    pub fn has_pending(&self) -> bool {
+        self.pending.load(Ordering::SeqCst)
     }
 
     /// Take everything queued so far (in arrival order) into `out`. Clears the wake-up flag *first*,
@@ -127,6 +136,39 @@ mod tests {
         // After draining, the next event wakes again.
         tx.send(Source::Phone, battery(1));
         assert_eq!(w.0.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn the_pending_flag_follows_sends_and_drains() {
+        let w = Arc::new(CountingWaker::default());
+        let (mut bus, tx) = Bus::new(w);
+        assert!(!bus.has_pending());
+        tx.send(Source::Local, battery(1));
+        assert!(bus.has_pending(), "something is waiting");
+        let mut out = Vec::new();
+        bus.drain(&mut out);
+        assert!(!bus.has_pending());
+    }
+
+    #[test]
+    fn an_event_sent_while_the_consumer_drains_is_never_stranded() {
+        // The producer sends between "clear the flag" and "take the events" in every possible
+        // interleaving: it is either taken by this drain or wakes again.
+        let w = Arc::new(CountingWaker::default());
+        let (mut bus, tx) = Bus::new(w.clone());
+        tx.send(Source::Local, battery(1));
+        let wakes_before = w.0.load(Ordering::SeqCst);
+        let mut out = Vec::new();
+        bus.drain(&mut out);
+        tx.send(Source::Local, battery(2));
+        assert_eq!(
+            w.0.load(Ordering::SeqCst),
+            wakes_before + 1,
+            "an event after the drain wakes the consumer again"
+        );
+        let mut more = Vec::new();
+        bus.drain(&mut more);
+        assert_eq!((out.len(), more.len()), (1, 1));
     }
 
     #[test]

@@ -31,6 +31,19 @@ pub fn push(msg: Msg) {
     wake();
 }
 
+/// Post a wake-up message, always. The event bus already coalesces by itself (one wake-up per drain
+/// cycle), so its waker must **not** add another "already pending" flag on top: two independent
+/// flags can each assume the other will cause the drain, and a wake-up is lost for good (events then
+/// sit in the queue until something unrelated wakes the UI thread).
+pub fn post_wake() {
+    let h = TARGET.load(Ordering::SeqCst);
+    if h != 0 {
+        unsafe {
+            let _ = PostMessageW(Some(HWND(h as *mut _)), WM_APP_WAKE, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
 /// Post at most one wake-up message no matter how many pushes happen before the UI thread drains.
 pub fn wake() {
     if !PENDING.swap(true, Ordering::SeqCst) {
