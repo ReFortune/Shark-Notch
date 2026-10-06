@@ -291,6 +291,38 @@ impl Default for MediaCfg {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+pub struct ClipboardCfg {
+    pub enabled: bool,
+    /// Unpinned entries kept (pinned ones are on top of this).
+    pub max_items: u32,
+    /// Of those, at most this many may be images (they are stored on disk while the app runs).
+    pub max_images: u32,
+    /// Capture images at all.
+    pub capture_images: bool,
+    /// Text longer than this many KiB is ignored.
+    pub max_text_kib: u32,
+    /// Keep pinned text across restarts (`pins.json` next to the log; history itself is never saved).
+    pub persist_pins: bool,
+    /// Briefly show items that arrive from the iPhone.
+    pub peek_phone_items: bool,
+}
+
+impl Default for ClipboardCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_items: 30,
+            max_images: 8,
+            capture_images: true,
+            max_text_kib: 256,
+            persist_pins: true,
+            peek_phone_items: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Modules {
     /// Page order. Unknown ids are ignored; modules that are disabled are skipped.
     pub order: Vec<String>,
@@ -299,7 +331,7 @@ pub struct Modules {
 impl Default for Modules {
     fn default() -> Self {
         Self {
-            order: vec!["media".into(), "clock".into()],
+            order: vec!["media".into(), "clipboard".into(), "clock".into()],
         }
     }
 }
@@ -316,6 +348,7 @@ pub struct Config {
     pub fullscreen: Fullscreen,
     pub modules: Modules,
     pub media: MediaCfg,
+    pub clipboard: ClipboardCfg,
     pub clock: ClockCfg,
 }
 
@@ -477,6 +510,27 @@ impl Config {
         );
         clamp_f(&mut self.media.peek_secs, 0.5, 10.0, "media.peek_secs", w);
         clamp_u(
+            &mut self.clipboard.max_items,
+            5,
+            200,
+            "clipboard.max_items",
+            w,
+        );
+        clamp_u(
+            &mut self.clipboard.max_images,
+            0,
+            30,
+            "clipboard.max_images",
+            w,
+        );
+        clamp_u(
+            &mut self.clipboard.max_text_kib,
+            1,
+            4096,
+            "clipboard.max_text_kib",
+            w,
+        );
+        clamp_u(
             &mut self.performance.gpu_idle_release_secs,
             0,
             86_400,
@@ -523,6 +577,7 @@ impl Config {
         let enabled = match id {
             "clock" => self.clock.enabled,
             "media" => self.media.enabled,
+            "clipboard" => self.clipboard.enabled,
             _ => false,
         };
         enabled && self.modules.order.iter().any(|m| m == id)
@@ -614,13 +669,22 @@ show_missed_indicator = true
 peek_over_fullscreen = false
 
 [modules]
-order = ["media", "clock"]     # page order; a module that is disabled in its own section is skipped
+order = ["media", "clipboard", "clock"]   # page order; a module that is disabled in its own section is skipped
 
 [media]
 enabled = true                 # follows whatever Windows considers the current media session
 peek_on_change = true          # briefly show the new track while the notch is collapsed
 peek_secs = 2.8
 visualizer = true              # level bars; frames are only drawn while playing AND the page is open
+
+[clipboard]
+enabled = true
+max_items = 30                 # unpinned entries kept (history lives in memory only)
+max_images = 8                 # of those, at most this many images (stored as temp files while running)
+capture_images = true
+max_text_kib = 256             # longer text is ignored
+persist_pins = true            # pinned *text* survives restarts (pins.json); nothing else is ever saved
+peek_phone_items = true        # briefly show items sent from the iPhone
 
 [clock]
 enabled = true

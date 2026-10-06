@@ -1202,9 +1202,11 @@ mod tests {
 
     #[test]
     fn works_inside_the_host_and_follows_the_config() {
+        let mut base = Config::default();
+        base.clipboard.enabled = false; // keep the ring to media + clock for this test
         let mut host = ModuleHost::new(
             crate::modules::registry(),
-            Arc::new(Config::default()),
+            Arc::new(base.clone()),
             Theme::default(),
         );
         assert_eq!(
@@ -1232,7 +1234,7 @@ mod tests {
             1,
             "a track change peeks through the host"
         );
-        let mut cfg = Config::default();
+        let mut cfg = base;
         cfg.media.enabled = false;
         host.apply_config(Arc::new(cfg));
         assert_eq!(

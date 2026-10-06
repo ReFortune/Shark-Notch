@@ -13,6 +13,7 @@ use notch_core::image::ImageCache;
 use notch_core::module::Command;
 
 pub mod audio;
+pub mod clipboard;
 pub mod media;
 
 pub struct Services {
@@ -20,6 +21,7 @@ pub struct Services {
     images: Arc<ImageCache>,
     pub audio: audio::AudioMeter,
     media: Option<media::MediaService>,
+    clipboard: Option<clipboard::ClipboardService>,
     suspended: bool,
 }
 
@@ -30,6 +32,7 @@ impl Services {
             images,
             audio: audio::AudioMeter::new(),
             media: None,
+            clipboard: None,
             suspended: false,
         }
     }
@@ -53,6 +56,39 @@ impl Services {
             }
             _ => {}
         }
+
+        let want_clip = cfg.module_active("clipboard");
+        match (want_clip, self.clipboard.is_some()) {
+            (true, false) => {
+                self.clipboard = clipboard::ClipboardService::start(
+                    cfg.clipboard.clone(),
+                    self.bus.clone(),
+                    self.images.clone(),
+                );
+                if self.suspended
+                    && let Some(c) = &self.clipboard
+                {
+                    c.suspend(true);
+                }
+            }
+            (false, true) => {
+                if let Some(c) = self.clipboard.take() {
+                    c.stop();
+                }
+            }
+            (true, true) => {
+                if let Some(c) = &self.clipboard {
+                    c.configure(cfg.clipboard.clone());
+                }
+            }
+            (false, false) => {}
+        }
+    }
+
+    /// The clipboard service, if its module is active (the iPhone listener adds items through it).
+    #[allow(dead_code)] // used by the iPhone listener (phase 11)
+    pub fn clipboard(&self) -> Option<&clipboard::ClipboardService> {
+        self.clipboard.as_ref()
     }
 
     /// Route a module's request to the service that owns it. Returns whether it was handled.
@@ -61,6 +97,12 @@ impl Services {
             Command::Media(c) => {
                 if let Some(m) = &self.media {
                     m.command(*c);
+                }
+                true
+            }
+            Command::Clipboard(c) => {
+                if let Some(s) = &self.clipboard {
+                    s.command(*c);
                 }
                 true
             }
@@ -74,6 +116,9 @@ impl Services {
         if let Some(m) = &self.media {
             m.suspend(on);
         }
+        if let Some(c) = &self.clipboard {
+            c.suspend(on);
+        }
         if on {
             self.audio.stop();
         }
@@ -83,6 +128,9 @@ impl Services {
         self.audio.stop();
         if let Some(m) = self.media.take() {
             m.stop();
+        }
+        if let Some(c) = self.clipboard.take() {
+            c.stop();
         }
     }
 }

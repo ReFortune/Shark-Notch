@@ -29,6 +29,9 @@ pub struct ClipboardItem {
     pub kind: ClipKind,
     /// A short single-line preview (never the full content).
     pub preview: Arc<str>,
+    /// Key into the image cache of a small thumbnail (0 = none).
+    pub thumb: u64,
+    pub pinned: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -110,7 +113,10 @@ pub enum EventKind {
     ThemeChanged,
     /// The shell stepped aside (`true`) or came back (`false`): fullscreen app, pause, lock, display off.
     Suspended(bool),
+    /// A new clipboard entry, or an existing one that was copied again (same id: move to front).
     ClipboardItem(ClipboardItem),
+    /// A clipboard entry was dropped (evicted or deleted).
+    ClipboardRemoved(u64),
     Notification(Notification),
     FileDropped(Vec<FileEntry>),
     /// Battery level of the device named by the event's source (`Phone` = "PhoneBattery").
@@ -127,6 +133,7 @@ pub enum Kind {
     ThemeChanged,
     Suspended,
     ClipboardItem,
+    ClipboardRemoved,
     Notification,
     FileDropped,
     Battery,
@@ -135,11 +142,12 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 9] = [
+    pub const ALL: [Kind; 10] = [
         Kind::ConfigChanged,
         Kind::ThemeChanged,
         Kind::Suspended,
         Kind::ClipboardItem,
+        Kind::ClipboardRemoved,
         Kind::Notification,
         Kind::FileDropped,
         Kind::Battery,
@@ -155,6 +163,7 @@ impl EventKind {
             EventKind::ThemeChanged => Kind::ThemeChanged,
             EventKind::Suspended(_) => Kind::Suspended,
             EventKind::ClipboardItem(_) => Kind::ClipboardItem,
+            EventKind::ClipboardRemoved(_) => Kind::ClipboardRemoved,
             EventKind::Notification(_) => Kind::Notification,
             EventKind::FileDropped(_) => Kind::FileDropped,
             EventKind::Battery(_) => Kind::Battery,
@@ -214,7 +223,10 @@ mod tests {
                 id: 1,
                 kind: ClipKind::Text,
                 preview: "x".into(),
+                thumb: 0,
+                pinned: false,
             }),
+            EventKind::ClipboardRemoved(1),
             EventKind::Notification(Notification {
                 id: 1,
                 app: "a".into(),

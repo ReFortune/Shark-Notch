@@ -3,6 +3,7 @@
 
 use crate::module::Factory;
 
+pub mod clipboard;
 pub mod clock;
 pub mod media;
 
@@ -12,6 +13,10 @@ pub fn registry() -> Vec<Factory> {
         Factory {
             id: "media",
             create: media::create,
+        },
+        Factory {
+            id: "clipboard",
+            create: clipboard::create,
         },
         Factory {
             id: "clock",

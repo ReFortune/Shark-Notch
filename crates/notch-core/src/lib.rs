@@ -3,10 +3,12 @@
 
 pub mod bus;
 pub mod civil;
+pub mod clipstore;
 pub mod color;
 pub mod compose;
 pub mod config;
 pub mod demo;
+pub mod dib;
 pub mod draw;
 pub mod events;
 pub mod frame;

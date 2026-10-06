@@ -20,7 +20,7 @@ use notch_core::compose::{self, Content, Metrics};
 use notch_core::config::Config;
 use notch_core::demo;
 use notch_core::draw::{Canvas, DrawList, ImageId};
-use notch_core::events::{Event, EventKind, MediaSnapshot, Source};
+use notch_core::events::{ClipKind, ClipboardItem, Event, EventKind, MediaSnapshot, Source};
 use notch_core::geom::{Rect, Vec2};
 use notch_core::module::{Env, ModuleHost};
 use notch_core::modules;
@@ -232,6 +232,62 @@ fn modules_sheet(out: &str, theme: Theme) {
         )
     };
     host.dispatch(vec![song("Midnight City", true)]);
+    let clip = |id: u64, kind: ClipKind, text: &str, thumb: u64, pinned: bool, src: Source| {
+        Event::new(
+            src,
+            EventKind::ClipboardItem(ClipboardItem {
+                id,
+                kind,
+                preview: text.into(),
+                thumb,
+                pinned,
+            }),
+        )
+    };
+    images.insert(ImageId(2), fake_art());
+    host.dispatch(vec![
+        clip(
+            1,
+            ClipKind::Link,
+            "github.com/ReFortune/Shark-Notch",
+            0,
+            true,
+            Source::Local,
+        ),
+        clip(
+            2,
+            ClipKind::Text,
+            "meeting notes: ship phase 4, then the file shelf",
+            0,
+            false,
+            Source::Local,
+        ),
+        clip(
+            3,
+            ClipKind::Image,
+            "Image · 1920×1080",
+            2,
+            false,
+            Source::Local,
+        ),
+        clip(
+            4,
+            ClipKind::Text,
+            "The quick brown fox jumps over the lazy dog and keeps running far past the edge",
+            0,
+            false,
+            Source::Local,
+        ),
+        clip(
+            5,
+            ClipKind::Link,
+            "example.com/sent-from-my-phone",
+            0,
+            false,
+            Source::Phone,
+        ),
+        clip(6, ClipKind::Text, "an older entry", 0, false, Source::Local),
+    ]);
     let _ = host.take_out();
     let pages = host.pages();
     let mut shell = Shell::new(ShellConfig::default());
@@ -268,6 +324,45 @@ fn modules_sheet(out: &str, theme: Theme) {
         }
     }
     render_cells(out, &theme, &cells, &pages, &images, &mut host);
+}
+
+/// Every icon on the notch background, large and at real size, for visual review.
+fn icons_sheet(out: &str) {
+    let fonts = Fonts::load();
+    let images = Images::default();
+    let theme = Theme::dark(notch_core::theme::FALLBACK_ACCENT);
+    let cols = 8usize;
+    let rows = notch_core::icons::Icon::ALL.len().div_ceil(cols);
+    let (cw, ch) = (84.0f32, 96.0f32);
+    let mut r = Renderer::new(cols as f32 * cw, rows as f32 * ch, 3.0, &fonts, &images);
+    r.pix.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 255));
+    let mut list = DrawList::new();
+    {
+        let mut cv = Canvas::new(&mut list, &theme);
+        for (i, icon) in notch_core::icons::Icon::ALL.iter().enumerate() {
+            let (x, y) = ((i % cols) as f32 * cw, (i / cols) as f32 * ch);
+            cv.icon(*icon, Rect::new(x + 16.0, y + 8.0, 52.0, 52.0), theme.text);
+            cv.icon(
+                *icon,
+                Rect::new(x + 12.0, y + 68.0, 16.0, 16.0),
+                theme.text_dim,
+            );
+            cv.icon(
+                *icon,
+                Rect::new(x + 36.0, y + 66.0, 20.0, 20.0),
+                theme.accent,
+            );
+            cv.text(
+                Rect::new(x + 2.0, y + 56.0, cw - 4.0, 12.0),
+                format!("{icon:?}"),
+                notch_core::draw::TextStyle::new(9.0, notch_core::draw::Weight::Regular)
+                    .align(notch_core::draw::Align::Center),
+                theme.text_faint,
+            );
+        }
+    }
+    r.draw_list(&list, Vec2::ZERO, 1.0);
+    save(&r.pix, out);
 }
 
 fn shapes_sheet(out: &str) {
@@ -314,11 +409,12 @@ fn main() {
         "shell" => shell_sheet(&out, Theme::dark(notch_core::theme::FALLBACK_ACCENT)),
         "shell-light" => shell_sheet(&out, Theme::light(notch_core::theme::FALLBACK_ACCENT)),
         "shapes" => shapes_sheet(&out),
+        "icons" => icons_sheet(&out),
         "modules" => modules_sheet(&out, Theme::dark(notch_core::theme::FALLBACK_ACCENT)),
         "modules-light" => modules_sheet(&out, Theme::light(notch_core::theme::FALLBACK_ACCENT)),
         other => {
             eprintln!(
-                "unknown command '{other}' (try: shell, shell-light, shapes, modules, modules-light)"
+                "unknown command '{other}' (try: shell, shell-light, shapes, icons, modules, modules-light)"
             );
             std::process::exit(2);
         }

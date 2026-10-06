@@ -14,7 +14,7 @@ use notch_core::color::Color;
 use notch_core::compose::{self, Metrics};
 use notch_core::config::{Config, FullscreenScope, Loaded, ReduceMotion, Style};
 use notch_core::draw::{CursorKind, DrawList, HitId};
-use notch_core::events::{EventKind, Source};
+use notch_core::events::{EventKind, Kind, Source};
 use notch_core::frame::{self, FrameRecorder};
 use notch_core::fullscreen::IRect;
 use notch_core::geom::{Rect, Size, Vec2};
@@ -123,6 +123,9 @@ pub struct App {
     pub(crate) images: Arc<ImageCache>,
     /// OS-backed producers (media session, audio meter, ...), alive only while their module is.
     pub(crate) services: Services,
+    /// Bus events delivered so far, per kind, and the last clipboard item (self-test evidence).
+    pub(crate) bus_counts: [u32; Kind::ALL.len()],
+    pub(crate) last_clip: Option<notch_core::events::ClipboardItem>,
     /// The last view reported to the host: (expanded, ring page).
     view: (bool, usize),
     system_24h: bool,
@@ -339,6 +342,8 @@ impl App {
             bus_tx,
             images,
             services,
+            bus_counts: [0; Kind::ALL.len()],
+            last_clip: None,
             view: (false, 0),
             system_24h: sys::system_24h(),
             metrics: Metrics::default(),
@@ -1056,7 +1061,7 @@ impl App {
 
     fn exec(&mut self, c: Command) {
         match c {
-            Command::Media(_) => {
+            Command::Media(_) | Command::Clipboard(_) => {
                 self.services.command(&c);
             }
             Command::OpenUrl(url) => {
@@ -1086,6 +1091,12 @@ impl App {
         self.bus.drain(&mut events);
         if events.is_empty() {
             return;
+        }
+        for ev in &events {
+            self.bus_counts[ev.kind.kind() as usize] += 1;
+            if let EventKind::ClipboardItem(it) = &ev.kind {
+                self.last_clip = Some(it.clone());
+            }
         }
         self.host_ctx(clock::now());
         self.host.dispatch(events);

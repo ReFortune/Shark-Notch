@@ -48,11 +48,25 @@ pub enum MediaCmd {
     Refresh,
 }
 
+/// Operations on the clipboard history.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipCmd {
+    /// Put this entry back on the system clipboard.
+    Copy(u64),
+    Pin(u64, bool),
+    Remove(u64),
+    /// Open a link entry in the default browser.
+    Open(u64),
+    /// Remove every unpinned entry.
+    Clear,
+}
+
 /// Things a module asks the platform to do. Modules never call the OS themselves.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     OpenUrl(Arc<str>),
     Media(MediaCmd),
+    Clipboard(ClipCmd),
 }
 
 /// Requests that concern the shell itself.

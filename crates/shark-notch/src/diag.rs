@@ -11,19 +11,23 @@
 
 use std::fmt::Write as _;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use notch_core::compose;
-use notch_core::events::{EventKind, MediaSnapshot, Source};
+use notch_core::events::{ClipKind, EventKind, Kind, MediaSnapshot, Source};
 use notch_core::image::ImageData;
+use notch_core::module::{ClipCmd, Command};
 use notch_core::modules::media::Layout as MediaLayout;
 use notch_core::shell::{Presence, Trigger};
 use windows::Win32::Foundation::COLORREF;
 use windows::Win32::Graphics::Gdi::{GetDC, GetPixel, ReleaseDC};
 
 use crate::app::{App, T_SCRIPT};
+use crate::services::clipboard as clip;
 use crate::win::clock;
 use crate::win::sys::{self, ProcMetrics};
+use crate::win::{paths, textclip};
 
 #[derive(Clone, Copy)]
 struct Mark {
@@ -31,8 +35,56 @@ struct Mark {
     m: ProcMetrics,
 }
 
+/// A watchdog thread that sleeps in short steps and notes every time it woke up much later than it
+/// asked: if *no* thread of this process ran for a while, the operating system (or the VM) stalled,
+/// and a hitch in the frame report is not the app's fault. Reported at the end of the self-test.
+struct Heartbeat {
+    stalls: Arc<Mutex<Vec<(f64, f64)>>>,
+}
+
+impl Heartbeat {
+    fn start() -> Heartbeat {
+        let stalls = Arc::new(Mutex::new(Vec::new()));
+        let s = stalls.clone();
+        let _ = std::thread::Builder::new()
+            .name("selftest-heartbeat".into())
+            .stack_size(128 * 1024)
+            .spawn(move || {
+                loop {
+                    let t0 = clock::now();
+                    std::thread::sleep(Duration::from_millis(15));
+                    let dt = clock::now() - t0;
+                    if dt > 0.12
+                        && let Ok(mut v) = s.lock()
+                    {
+                        v.push((t0, dt));
+                    }
+                }
+            });
+        Heartbeat { stalls }
+    }
+
+    fn report(&self, start: f64) -> String {
+        let v = self.stalls.lock().map(|g| g.clone()).unwrap_or_default();
+        if v.is_empty() {
+            return "no system stalls: a helper thread was never delayed by more than 120 ms"
+                .into();
+        }
+        let list: Vec<String> = v
+            .iter()
+            .map(|(t, d)| format!("{:.0} ms at +{:.2}s", d * 1000.0, t - start))
+            .collect();
+        format!(
+            "{} system stall(s) where even an idle helper thread woke late (the OS/VM, not the notch): {}",
+            v.len(),
+            list.join(", ")
+        )
+    }
+}
+
 pub struct SelfTest {
     start: f64,
+    heartbeat: Heartbeat,
     next: usize,
     pub finished: bool,
     pub exit_code: i32,
@@ -41,6 +93,9 @@ pub struct SelfTest {
     idle_begin: Option<Mark>,
     /// Id of the synthetic album art in the image cache.
     art_id: u64,
+    /// `ClipboardItem` events seen before the current clipboard act.
+    clip_mark: u32,
+    clip_text_id: u64,
     /// Cycles per second of a busy core (calibrated), for tick-free CPU percentages.
     cycles_hz: f64,
     warm_idle: Option<(f64, f64)>,     // (cpu %, private MiB)
@@ -70,6 +125,22 @@ enum Act {
     CheckPeek,
     MediaGone,
     CheckGone,
+    ClipText,
+    ClipTextCheck,
+    ClipLink,
+    ClipLinkCheck,
+    ClipImage,
+    ClipImageCheck,
+    ClipExcluded,
+    ClipExcludedCheck,
+    ClipRecopy,
+    ClipRecopyCheck,
+    ClipPin,
+    ClipPinCheck,
+    ClipUnpin,
+    ClipUnpinCheck,
+    ClipPage,
+    ClipProbe,
     Report,
 }
 
@@ -98,8 +169,29 @@ const SCRIPT: &[(f64, Act)] = &[
     (28.7, Act::CheckPeek),
     (30.5, Act::MediaGone),
     (31.0, Act::CheckGone),
-    (31.5, Act::Report),
+    (31.5, Act::ClipText),
+    (32.3, Act::ClipTextCheck),
+    (32.4, Act::ClipLink),
+    (33.1, Act::ClipLinkCheck),
+    (33.2, Act::ClipImage),
+    (34.2, Act::ClipImageCheck),
+    (34.3, Act::ClipExcluded),
+    (35.0, Act::ClipExcludedCheck),
+    (35.1, Act::ClipRecopy),
+    (35.8, Act::ClipRecopyCheck),
+    (35.9, Act::ClipPin),
+    (36.5, Act::ClipPinCheck),
+    (36.6, Act::ClipUnpin),
+    (37.2, Act::ClipUnpinCheck),
+    (37.3, Act::ClipPage),
+    (38.8, Act::ClipProbe),
+    (39.3, Act::Report),
 ];
+
+const CLIP_TEXT: &str = "Selftest clipboard text";
+const CLIP_LINK: &str = "https://example.com/shark-notch-selftest";
+/// The colour of the synthetic clipboard image (r, g, b).
+const CLIP_RGB: (u8, u8, u8) = (30, 160, 90);
 
 /// The colour of the synthetic album art (r, g, b): distinctive and not a theme colour.
 const ART_RGB: (u8, u8, u8) = (210, 60, 120);
@@ -156,6 +248,40 @@ fn probe_pixel(x: i32, y: i32) -> Option<(u8, u8, u8)> {
     }
 }
 
+fn clip_events(a: &App) -> u32 {
+    a.bus_counts[Kind::ClipboardItem as usize]
+}
+
+/// Did a `ClipboardItem` event arrive since `st.clip_mark`? Returns it if so.
+fn new_clip_item(a: &App, st: &SelfTest) -> Option<notch_core::events::ClipboardItem> {
+    (clip_events(a) > st.clip_mark)
+        .then(|| a.last_clip.clone())
+        .flatten()
+}
+
+fn pins_file() -> std::path::PathBuf {
+    paths::data_dir().join("pins.json")
+}
+
+/// Row `k`'s thumbnail centre in screen pixels, computed the same way the clipboard page lays out.
+fn clip_thumb_pixel(a: &App, page: usize, k: usize) -> (i32, i32) {
+    use notch_core::modules::clipboard::{HEADER_H, ROW_H};
+    let size = a.pages[page];
+    let area = compose::content_rect(0.0, size, a.layout.win_dip.w, &a.metrics);
+    let (_, rest) = area.split_top(HEADER_H);
+    let list_y = rest.y + 4.0;
+    let (rx, ry) = (
+        area.x + 6.0 + 14.0,
+        list_y + k as f32 * ROW_H + (ROW_H - 4.0) * 0.5,
+    );
+    let (wx, wy, _, _) = a.layout.win_px;
+    let ppd = a.layout.px_per_dip;
+    (
+        wx + (rx * ppd).round() as i32,
+        wy + (ry * ppd).round() as i32,
+    )
+}
+
 pub fn begin(a: &mut App) {
     let now = clock::now();
     if a.opts.light_probe {
@@ -164,6 +290,7 @@ pub fn begin(a: &mut App) {
     }
     let mut st = SelfTest {
         start: now,
+        heartbeat: Heartbeat::start(),
         next: 0,
         finished: false,
         exit_code: 0,
@@ -171,6 +298,8 @@ pub fn begin(a: &mut App) {
         failures: Vec::new(),
         idle_begin: None,
         art_id: 0,
+        clip_mark: 0,
+        clip_text_id: 0,
         cycles_hz: sys::cycles_per_sec(),
         warm_idle: None,
         released_idle: None,
@@ -193,8 +322,15 @@ pub fn step(a: &mut App, now: f64) {
         a.selftest = Some(st);
         return;
     }
-    let (_, act) = SCRIPT[st.next];
+    let (due, act) = SCRIPT[st.next];
     st.next += 1;
+    let late = now - (st.start + due);
+    if late > 0.1 {
+        st.say(format!(
+            "timer for {act:?} fired {:.0} ms late (the loop was busy, blocked or the process stalled)",
+            late * 1000.0
+        ));
+    }
     run(a, &mut st, act, now);
     if let Some(&(t, _)) = SCRIPT.get(st.next) {
         a.sched.set(T_SCRIPT, st.start + t);
@@ -424,6 +560,156 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
                 st.fail("the audio meter thread is running while nothing is animating".into());
             }
         }
+        Act::ClipText => {
+            st.clip_mark = clip_events(a);
+            if !textclip::copy_text(a.ctrl, CLIP_TEXT) {
+                st.fail("could not put text on the clipboard".into());
+            }
+        }
+        Act::ClipTextCheck => match new_clip_item(a, st) {
+            Some(it) if it.kind == ClipKind::Text && it.preview.as_ref() == CLIP_TEXT => {
+                st.clip_text_id = it.id;
+                st.say(format!(
+                    "clipboard: text copied by 'another app' arrived as entry {}",
+                    it.id
+                ));
+            }
+            Some(it) => st.fail(format!(
+                "clipboard: unexpected entry {:?} '{}'",
+                it.kind, it.preview
+            )),
+            None => st.fail("clipboard: a copied text never reached the bus".into()),
+        },
+        Act::ClipLink => {
+            st.clip_mark = clip_events(a);
+            if !textclip::copy_text(a.ctrl, CLIP_LINK) {
+                st.fail("could not put a link on the clipboard".into());
+            }
+        }
+        Act::ClipLinkCheck => match new_clip_item(a, st) {
+            Some(it) if it.kind == ClipKind::Link => {
+                st.say(format!(
+                    "clipboard: link recognised, previewed as '{}'",
+                    it.preview
+                ));
+            }
+            Some(it) => st.fail(format!("clipboard: a link was classified as {:?}", it.kind)),
+            None => st.fail("clipboard: a copied link never reached the bus".into()),
+        },
+        Act::ClipImage => {
+            st.clip_mark = clip_events(a);
+            let (r, g, b) = CLIP_RGB;
+            let px = [b, g, r, 255].repeat(64 * 64);
+            if !clip::put_dib(a.ctrl, 64, 64, &px) {
+                st.fail("could not put a bitmap on the clipboard".into());
+            }
+        }
+        Act::ClipImageCheck => match new_clip_item(a, st) {
+            Some(it) if it.kind == ClipKind::Image && it.thumb != 0 => {
+                let thumb_ok = a.images.contains(notch_core::draw::ImageId(it.thumb));
+                let blobs = std::fs::read_dir(paths::data_dir().join("clips"))
+                    .map(|d| {
+                        d.filter_map(Result::ok)
+                            .filter(|e| e.path().extension().is_some_and(|x| x == "png"))
+                            .count()
+                    })
+                    .unwrap_or(0);
+                st.say(format!(
+                    "clipboard: bitmap arrived as '{}' (thumbnail cached: {thumb_ok}; full-size PNG files on disk: {blobs})",
+                    it.preview
+                ));
+                if !thumb_ok || blobs == 0 {
+                    st.fail("clipboard: the image thumbnail or its stored PNG is missing".into());
+                }
+            }
+            Some(it) => st.fail(format!(
+                "clipboard: bitmap arrived as {:?} thumb {}",
+                it.kind, it.thumb
+            )),
+            None => st.fail(
+                "clipboard: a copied bitmap never reached the bus (DIB -> BMP -> WIC path)".into(),
+            ),
+        },
+        Act::ClipExcluded => {
+            st.clip_mark = clip_events(a);
+            if !clip::put_excluded_text(a.ctrl, "secret-password-123") {
+                st.fail("could not put the excluded text on the clipboard".into());
+            }
+        }
+        Act::ClipExcludedCheck => {
+            if new_clip_item(a, st).is_some() {
+                st.fail("clipboard: content marked 'exclude from monitoring' WAS recorded".into());
+            } else {
+                st.say("clipboard: content flagged 'exclude from monitoring' (password managers) was ignored".into());
+            }
+        }
+        Act::ClipRecopy => {
+            st.clip_mark = clip_events(a);
+            a.services
+                .command(&Command::Clipboard(ClipCmd::Copy(st.clip_text_id)));
+        }
+        Act::ClipRecopyCheck => {
+            let text = clip::current_text(a.ctrl);
+            let moved = new_clip_item(a, st).map(|i| i.id);
+            if text.as_deref() == Some(CLIP_TEXT) && moved == Some(st.clip_text_id) {
+                st.say("clipboard: clicking an entry put its text back and moved it to the front, without recording a duplicate".into());
+            } else {
+                st.fail(format!(
+                    "clipboard: re-copy failed (clipboard text {text:?}, moved entry {moved:?})"
+                ));
+            }
+        }
+        Act::ClipPin => {
+            a.services
+                .command(&Command::Clipboard(ClipCmd::Pin(st.clip_text_id, true)));
+        }
+        Act::ClipPinCheck => match std::fs::read_to_string(pins_file()) {
+            Ok(t) if t.contains(CLIP_TEXT) => {
+                st.say("clipboard: a pinned text was saved to pins.json".into())
+            }
+            other => st.fail(format!(
+                "clipboard: pins.json missing or wrong after pinning: {other:?}"
+            )),
+        },
+        Act::ClipUnpin => {
+            a.services
+                .command(&Command::Clipboard(ClipCmd::Pin(st.clip_text_id, false)));
+        }
+        Act::ClipUnpinCheck => {
+            if pins_file().exists() {
+                st.fail("clipboard: pins.json still exists after unpinning the last pin".into());
+            } else {
+                st.say("clipboard: unpinning the last pin removed pins.json (nothing of the history stays on disk)".into());
+            }
+        }
+        Act::ClipPage => match a.host.page_of("clipboard") {
+            Some(p) => {
+                a.shell.set_page(now, p);
+                a.expand(Trigger::Hotkey);
+            }
+            None => st.fail("the clipboard page is not in the ring".into()),
+        },
+        Act::ClipProbe => {
+            if let Some(p) = a.host.page_of("clipboard") {
+                // Newest first: [re-copied text, image, link] -> the image is row 1.
+                let (x, y) = clip_thumb_pixel(a, p, 1);
+                match probe_pixel(x, y) {
+                    Some((r, g, b)) => {
+                        let (er, eg, eb) = CLIP_RGB;
+                        let close = |v: u8, e: u8| v.abs_diff(e) <= 8;
+                        let ok = close(r, er) && close(g, eg) && close(b, eb);
+                        st.say(format!(
+                            "probe clipboard image thumbnail at ({x},{y}): rgb({r},{g},{b}) expected ~({er},{eg},{eb}) -> {}",
+                            if ok { "matches: thumbnail drawn in the list" } else { "does NOT match (row layout changed, or desktop probing unavailable)" }
+                        ));
+                    }
+                    None => st.say(
+                        "probe clipboard thumbnail: GetPixel unavailable on this session".into(),
+                    ),
+                }
+            }
+            a.collapse(true);
+        }
         Act::Report => finish(a, st),
     }
 }
@@ -459,6 +745,8 @@ fn finish(a: &mut App, st: &mut SelfTest) {
         );
     }
     st.say(report.trim_end().to_string());
+    let hb = st.heartbeat.report(st.start);
+    st.say(hb);
     st.say(format!(
         "result: {}",
         if st.failures.is_empty() {

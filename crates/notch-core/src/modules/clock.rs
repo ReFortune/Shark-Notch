@@ -393,7 +393,11 @@ mod tests {
     fn works_inside_the_host_end_to_end() {
         use crate::module::ModuleHost;
         use std::sync::Arc;
-        let host_cfg = Arc::new(Config::default());
+        // Only the clock: the other built-in pages are switched off for this test.
+        let mut only_clock = Config::default();
+        only_clock.media.enabled = false;
+        only_clock.clipboard.enabled = false;
+        let host_cfg = Arc::new(only_clock);
         let mut h = ModuleHost::new(crate::modules::registry(), host_cfg, Theme::default());
         assert_eq!(h.page_ids(), vec!["clock"]);
         assert_eq!(h.pages(), vec![Size::new(344.0, 112.0)]);

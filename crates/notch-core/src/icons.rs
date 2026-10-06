@@ -23,11 +23,20 @@ pub enum Icon {
     Clock,
     /// Beamed music notes (placeholder album art).
     Note,
+    Pin,
+    Trash,
+    /// A globe: "this is a link".
+    Globe,
+    Image,
+    /// Text lines: "this is text".
+    Doc,
+    /// Arrow leaving a box: open externally.
+    Open,
 }
 
 impl Icon {
     /// Every icon, for tests and the preview tool.
-    pub const ALL: [Icon; 13] = [
+    pub const ALL: [Icon; 19] = [
         Icon::Play,
         Icon::Pause,
         Icon::Next,
@@ -41,6 +50,12 @@ impl Icon {
         Icon::ChevronDown,
         Icon::Clock,
         Icon::Note,
+        Icon::Pin,
+        Icon::Trash,
+        Icon::Globe,
+        Icon::Image,
+        Icon::Doc,
+        Icon::Open,
     ];
 }
 
@@ -82,6 +97,19 @@ pub fn circle_path(cx: f32, cy: f32, r: f32) -> Path {
     path.cubic_to(p(cx - k, cy + r), p(cx - r, cy + k), p(cx - r, cy));
     path.cubic_to(p(cx - r, cy - k), p(cx - k, cy - r), p(cx, cy - r));
     path.cubic_to(p(cx + k, cy - r), p(cx + r, cy - k), p(cx + r, cy));
+    path.close();
+    path
+}
+
+/// Axis-aligned ellipse as four cubic Béziers.
+pub fn ellipse_path(cx: f32, cy: f32, rx: f32, ry: f32) -> Path {
+    let (kx, ky) = (0.552_284_7 * rx, 0.552_284_7 * ry);
+    let mut path = Path::new();
+    path.move_to(p(cx + rx, cy));
+    path.cubic_to(p(cx + rx, cy + ky), p(cx + kx, cy + ry), p(cx, cy + ry));
+    path.cubic_to(p(cx - kx, cy + ry), p(cx - rx, cy + ky), p(cx - rx, cy));
+    path.cubic_to(p(cx - rx, cy - ky), p(cx - kx, cy - ry), p(cx, cy - ry));
+    path.cubic_to(p(cx + kx, cy - ry), p(cx + rx, cy - ky), p(cx + rx, cy));
     path.close();
     path
 }
@@ -194,6 +222,81 @@ pub fn ops(icon: Icon) -> Vec<IconOp> {
             Stroke(circle_path(12.0, 12.0, 8.5), 2.0),
             Stroke(
                 polyline(&[(12.0, 7.0), (12.0, 12.0), (15.5, 14.0)], false),
+                2.0,
+            ),
+        ],
+        Icon::Pin => vec![
+            Stroke(
+                polyline(
+                    &[
+                        (9.0, 3.5),
+                        (15.0, 3.5),
+                        (14.2, 9.5),
+                        (18.0, 13.5),
+                        (6.0, 13.5),
+                        (9.8, 9.5),
+                    ],
+                    true,
+                ),
+                2.0,
+            ),
+            Stroke(polyline(&[(12.0, 13.5), (12.0, 20.5)], false), 2.0),
+        ],
+        Icon::Trash => vec![
+            Stroke(polyline(&[(4.5, 7.0), (19.5, 7.0)], false), 2.0),
+            Stroke(
+                polyline(&[(6.5, 7.0), (7.5, 19.5), (16.5, 19.5), (17.5, 7.0)], false),
+                2.0,
+            ),
+            Stroke(
+                polyline(&[(9.0, 7.0), (9.0, 4.0), (15.0, 4.0), (15.0, 7.0)], false),
+                2.0,
+            ),
+        ],
+        Icon::Globe => vec![
+            Stroke(circle_path(12.0, 12.0, 8.5), 2.0),
+            Stroke(polyline(&[(3.5, 12.0), (20.5, 12.0)], false), 1.8),
+            Stroke(ellipse_path(12.0, 12.0, 3.8, 8.5), 1.8),
+        ],
+        Icon::Image => vec![
+            Stroke(rrect_path(3.8, 5.0, 16.4, 14.0, 2.8), 2.0),
+            Fill(circle_path(9.0, 10.0, 1.7)),
+            Stroke(
+                polyline(
+                    &[
+                        (5.5, 17.5),
+                        (10.0, 13.0),
+                        (13.5, 16.5),
+                        (15.5, 14.5),
+                        (18.5, 17.5),
+                    ],
+                    false,
+                ),
+                1.9,
+            ),
+        ],
+        Icon::Doc => vec![
+            Stroke(polyline(&[(5.0, 7.0), (19.0, 7.0)], false), 2.0),
+            Stroke(polyline(&[(5.0, 12.0), (19.0, 12.0)], false), 2.0),
+            Stroke(polyline(&[(5.0, 17.0), (13.5, 17.0)], false), 2.0),
+        ],
+        Icon::Open => vec![
+            Stroke(
+                polyline(&[(14.0, 4.5), (19.5, 4.5), (19.5, 10.0)], false),
+                2.0,
+            ),
+            Stroke(polyline(&[(19.5, 4.5), (11.0, 13.0)], false), 2.0),
+            Stroke(
+                polyline(
+                    &[
+                        (17.5, 14.5),
+                        (17.5, 19.5),
+                        (4.5, 19.5),
+                        (4.5, 6.5),
+                        (9.5, 6.5),
+                    ],
+                    false,
+                ),
                 2.0,
             ),
         ],
