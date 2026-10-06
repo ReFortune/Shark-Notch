@@ -1,0 +1,12 @@
+[package]
+name = "notch-preview"
+description = "Dev tool: renders notch-core display lists to PNG with tiny-skia so layouts can be inspected on any OS. Never shipped."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+notch-core = { path = "../notch-core" }
+tiny-skia = "0.11"
+fontdue = "0.9"

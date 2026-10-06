@@ -1,0 +1,31 @@
+[workspace]
+resolver = "3"
+members = ["crates/notch-core", "crates/shark-notch", "crates/notch-preview"]
+# `cargo test` / `cargo build` on a non-Windows host only touches the portable crate.
+default-members = ["crates/notch-core"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+
+[workspace.dependencies]
+serde = { version = "1", default-features = false, features = ["derive"] }
+serde_json = "1"
+toml = { version = "1", default-features = false, features = ["parse", "serde"] }
+windows = "0.62"
+windows-core = "0.62"
+
+[profile.release]
+# Size over peak speed: the UI thread is idle >99.9 % of the time, and a smaller image touches
+# fewer pages at start-up.
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+# Panics are caught at module boundaries (see notch-core::module), so keep unwinding.
+panic = "unwind"
+
+[profile.dev]
+opt-level = 1
