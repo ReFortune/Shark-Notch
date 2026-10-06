@@ -35,11 +35,12 @@ pub enum Icon {
     Folder,
     /// An inbox tray with a down arrow: "drop it here".
     Tray,
+    Bell,
 }
 
 impl Icon {
     /// Every icon, for tests and the preview tool.
-    pub const ALL: [Icon; 21] = [
+    pub const ALL: [Icon; 22] = [
         Icon::Play,
         Icon::Pause,
         Icon::Next,
@@ -61,6 +62,7 @@ impl Icon {
         Icon::Open,
         Icon::Folder,
         Icon::Tray,
+        Icon::Bell,
     ];
 }
 
@@ -305,6 +307,21 @@ pub fn ops(icon: Icon) -> Vec<IconOp> {
                 2.0,
             ),
         ],
+        Icon::Bell => {
+            let mut body = Path::new();
+            body.move_to(p(5.0, 17.5));
+            body.line_to(p(6.5, 16.0));
+            body.line_to(p(6.5, 11.0));
+            body.cubic_to(p(6.5, 5.5), p(17.5, 5.5), p(17.5, 11.0));
+            body.line_to(p(17.5, 16.0));
+            body.line_to(p(19.0, 17.5));
+            body.close();
+            vec![
+                Stroke(body, 2.0),
+                Stroke(polyline(&[(12.0, 3.2), (12.0, 5.2)], false), 2.0),
+                Stroke(polyline(&[(10.0, 20.5), (14.0, 20.5)], false), 2.0),
+            ]
+        }
         Icon::Folder => vec![Stroke(
             polyline(
                 &[

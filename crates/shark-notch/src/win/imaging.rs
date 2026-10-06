@@ -7,6 +7,7 @@
 use std::path::Path;
 
 use notch_core::image::ImageData;
+use windows::Storage::Streams::{DataReader, IRandomAccessStreamWithContentType};
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_ContainerFormatPng, GUID_WICPixelFormat32bppBGRA,
     GUID_WICPixelFormat32bppPBGRA, IWICBitmapFrameDecode, IWICBitmapFrameEncode,
@@ -62,6 +63,20 @@ unsafe fn open_frame(
         }
         Some((factory, frame, w, h))
     }
+}
+
+/// Read a WinRT stream (an album cover, an app logo) into memory, refusing anything over `max_bytes`.
+/// Blocks on the stream; call from a worker thread.
+pub fn read_stream(stream: &IRandomAccessStreamWithContentType, max_bytes: u64) -> Option<Vec<u8>> {
+    let size = stream.Size().ok()?;
+    if size == 0 || size > max_bytes {
+        return None;
+    }
+    let reader = DataReader::CreateDataReader(&stream.GetInputStreamAt(0).ok()?).ok()?;
+    reader.LoadAsync(size as u32).ok()?.join().ok()?;
+    let mut bytes = vec![0u8; size as usize];
+    reader.ReadBytes(&mut bytes).ok()?;
+    Some(bytes)
 }
 
 /// Decode an encoded image to premultiplied BGRA, downscaled (Fant) to fit `max_edge`.

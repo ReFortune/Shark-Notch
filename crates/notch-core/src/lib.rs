@@ -21,6 +21,7 @@ pub mod image;
 pub mod input;
 pub mod module;
 pub mod modules;
+pub mod notifsync;
 pub mod path;
 pub mod raster;
 pub mod sched;

@@ -128,6 +128,8 @@ pub struct App {
     pub(crate) bus_counts: [u32; Kind::ALL.len()],
     pub(crate) last_clip: Option<notch_core::events::ClipboardItem>,
     pub(crate) last_files: Option<Vec<notch_core::events::FileEntry>>,
+    /// The most recent `NotificationAccess` from the notifications service (self-test reads it).
+    pub(crate) last_notif_access: Option<notch_core::events::NotificationAccess>,
     /// The notch's OLE drop target (registered on every stage window while the shelf is active).
     pub(crate) drop_target: Option<windows::Win32::System::Ole::IDropTarget>,
     /// Files the shelf asked to drag out; OLE's modal loop runs from the main loop, outside any borrow.
@@ -352,6 +354,7 @@ impl App {
             bus_counts: [0; Kind::ALL.len()],
             last_clip: None,
             last_files: None,
+            last_notif_access: None,
             drop_target: None,
             pending_drag: None,
             press_pos: None,
@@ -635,8 +638,13 @@ impl App {
         }
     }
 
-    fn maybe_release_gpu(&mut self, now: f64) {
-        let idle = self.shell.presence() == Presence::Collapsed && !self.animating() && !self.burst;
+    pub(crate) fn maybe_release_gpu(&mut self, now: f64) {
+        // The CPU pill is only a shape: while a chip (the "missed notifications" badge) has to be
+        // *drawn* on it, the GPU stack stays. Chips are rare and end when the user looks at them.
+        let idle = self.shell.presence() == Presence::Collapsed
+            && !self.animating()
+            && !self.burst
+            && self.host.chips_width() == 0.0;
         if idle {
             self.release_gpu()
         } else {
@@ -1059,8 +1067,11 @@ impl App {
             self.pages = pages.clone();
             self.shell.set_pages(pages);
         }
-        self.shell
-            .set_chip_width(clock::now(), self.host.chips_width());
+        // While suspended (a game is in front) the pill is hidden: take the chip on resume instead.
+        if !self.suspended() {
+            self.shell
+                .set_chip_width(clock::now(), self.host.chips_width());
+        }
     }
 
     /// Execute what the host accumulated: commands, shell requests, redraws, crashed modules.
@@ -1132,7 +1143,10 @@ impl App {
                     self.pending_drag = Some(paths);
                 }
             }
-            Command::Media(_) | Command::Clipboard(_) | Command::Shelf(_) => {
+            Command::Media(_)
+            | Command::Clipboard(_)
+            | Command::Shelf(_)
+            | Command::Notifications(_) => {
                 self.services.command(&c);
             }
             Command::OpenUrl(url) => {
@@ -1168,6 +1182,7 @@ impl App {
             match &ev.kind {
                 EventKind::ClipboardItem(it) => self.last_clip = Some(it.clone()),
                 EventKind::FileDropped(f) => self.last_files = Some(f.clone()),
+                EventKind::NotificationAccess(a) => self.last_notif_access = Some(*a),
                 _ => {}
             }
         }
@@ -1285,6 +1300,8 @@ impl App {
                 self.shell.set_suspended(now, false);
                 self.kick("resume");
             }
+            // Chips that appeared while away (the "missed notifications" badge) grow in now.
+            self.refresh_pages();
             self.start_sampling();
             info!("resumed");
         }

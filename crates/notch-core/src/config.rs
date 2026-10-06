@@ -343,6 +343,36 @@ impl Default for ShelfCfg {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+pub struct NotificationsCfg {
+    pub enabled: bool,
+    /// Briefly show new notifications while the notch is collapsed.
+    pub peek: bool,
+    /// How long that peek stays, in seconds.
+    pub peek_secs: f32,
+    /// Notifications kept in the list.
+    pub max_items: u32,
+    /// Apps (display names, case-insensitive) whose notifications are never shown here.
+    pub ignore_apps: Vec<String>,
+    /// Dismissing a notification in the notch also removes it from Windows' notification centre.
+    /// Off by default: the notch only ever hides *its own copy*.
+    pub dismiss_in_windows: bool,
+}
+
+impl Default for NotificationsCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            peek: true,
+            peek_secs: 4.0,
+            max_items: 20,
+            ignore_apps: Vec::new(),
+            dismiss_in_windows: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Modules {
     /// Page order. Unknown ids are ignored; modules that are disabled are skipped.
     pub order: Vec<String>,
@@ -355,6 +385,7 @@ impl Default for Modules {
                 "media".into(),
                 "clipboard".into(),
                 "shelf".into(),
+                "notifications".into(),
                 "clock".into(),
             ],
         }
@@ -375,6 +406,7 @@ pub struct Config {
     pub media: MediaCfg,
     pub clipboard: ClipboardCfg,
     pub shelf: ShelfCfg,
+    pub notifications: NotificationsCfg,
     pub clock: ClockCfg,
 }
 
@@ -536,6 +568,20 @@ impl Config {
         );
         clamp_f(&mut self.media.peek_secs, 0.5, 10.0, "media.peek_secs", w);
         clamp_u(&mut self.shelf.max_items, 1, 200, "shelf.max_items", w);
+        clamp_f(
+            &mut self.notifications.peek_secs,
+            1.0,
+            15.0,
+            "notifications.peek_secs",
+            w,
+        );
+        clamp_u(
+            &mut self.notifications.max_items,
+            1,
+            100,
+            "notifications.max_items",
+            w,
+        );
         clamp_u(
             &mut self.clipboard.max_items,
             5,
@@ -606,6 +652,7 @@ impl Config {
             "media" => self.media.enabled,
             "clipboard" => self.clipboard.enabled,
             "shelf" => self.shelf.enabled,
+            "notifications" => self.notifications.enabled,
             _ => false,
         };
         enabled && self.modules.order.iter().any(|m| m == id)
@@ -697,7 +744,7 @@ show_missed_indicator = true
 peek_over_fullscreen = false
 
 [modules]
-order = ["media", "clipboard", "shelf", "clock"]   # page order; a module that is disabled in its own section is skipped
+order = ["media", "clipboard", "shelf", "notifications", "clock"]   # page order; a module that is disabled in its own section is skipped
 
 [media]
 enabled = true                 # follows whatever Windows considers the current media session
@@ -718,6 +765,14 @@ peek_phone_items = true        # briefly show items sent from the iPhone
 enabled = true
 open_on_drag = true            # a file drag heading for the top of the screen opens the shelf
 max_items = 40                 # the shelf only holds references; your files are never moved or deleted
+
+[notifications]
+enabled = true                 # mirrors Windows notifications (needs package identity: see docs/NOTIFICATIONS.md) and the iPhone's
+peek = true                    # briefly show a new notification while the notch is collapsed, then tuck away
+peek_secs = 4.0
+max_items = 20
+ignore_apps = []               # e.g. ["Spotify", "Steam"]
+dismiss_in_windows = false     # true: dismissing here also clears it from the Windows notification centre
 
 [clock]
 enabled = true

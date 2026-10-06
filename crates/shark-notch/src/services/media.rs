@@ -27,7 +27,6 @@ use windows::Media::Control::{
     MediaPropertiesChangedEventArgs, PlaybackInfoChangedEventArgs, SessionsChangedEventArgs,
     TimelinePropertiesChangedEventArgs,
 };
-use windows::Storage::Streams::DataReader;
 use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize, RoUninitialize};
 
 use crate::win::imaging;
@@ -485,14 +484,7 @@ impl Worker {
 /// Read the session's thumbnail and decode it (on this worker thread).
 fn fetch_art(props: &Props) -> Option<(notch_core::image::ImageData, Option<[u8; 3]>)> {
     let stream = props.Thumbnail().ok()?.OpenReadAsync().ok()?.join().ok()?;
-    let size = stream.Size().ok()?;
-    if size == 0 || size > MAX_ART_BYTES {
-        return None;
-    }
-    let reader = DataReader::CreateDataReader(&stream.GetInputStreamAt(0).ok()?).ok()?;
-    reader.LoadAsync(size as u32).ok()?.join().ok()?;
-    let mut bytes = vec![0u8; size as usize];
-    reader.ReadBytes(&mut bytes).ok()?;
+    let bytes = imaging::read_stream(&stream, MAX_ART_BYTES)?;
     let img = imaging::decode(&bytes, ART_EDGE)?;
     let c = img.dominant_color().to_rgba8();
     Some((img, Some([c[0], c[1], c[2]])))

@@ -92,7 +92,7 @@ locked, display-off or a fullscreen app is foreground.
 | 3 | Media (SMTC, album art, controls, seek, visualizer) | implemented — needs your hardware for the live SMTC check |
 | 4 | Clipboard history (text, links, images; pin; re-copy) | implemented |
 | 5 | File shelf (OLE drop target, drag out) | implemented — real drag-and-drop needs your hardware |
-| 6 | Windows notifications | planned |
+| 6 | Windows notifications (banner, list, missed badge) | implemented — needs a one-off identity step and your hardware, see [`docs/NOTIFICATIONS.md`](docs/NOTIFICATIONS.md) |
 | 7 | Calendar + Pomodoro | planned |
 | 8 | Live activities | planned |
 | 9 | System stats | planned |

@@ -15,10 +15,13 @@ notch-core = { path = "../notch-core" }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
+    "ApplicationModel",
     "Foundation",
     "Foundation_Collections",
     "Media_Control",
     "Storage_Streams",
+    "UI_Notifications",
+    "UI_Notifications_Management",
     "Win32_Foundation",
     "Win32_Globalization",
     "Win32_Graphics_Direct2D",
@@ -36,6 +39,7 @@ windows = { workspace = true, features = [
     "Win32_Media_Audio_Endpoints",
     "Win32_Security",
     "Win32_Storage_FileSystem",
+    "Win32_Storage_Packaging_Appx",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Console",

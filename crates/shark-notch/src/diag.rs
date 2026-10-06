@@ -15,7 +15,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use notch_core::compose;
-use notch_core::events::{ClipKind, EventKind, Kind, MediaSnapshot, Source};
+use notch_core::draw::DrawCmd;
+use notch_core::events::{ClipKind, EventKind, Kind, MediaSnapshot, Notification, Source};
 use notch_core::image::ImageData;
 use notch_core::module::{ClipCmd, Command};
 use notch_core::modules::media::Layout as MediaLayout;
@@ -99,6 +100,8 @@ pub struct SelfTest {
     /// Bus-event counts before the shelf drop: `(DragHover, FileDropped)`.
     shelf_mark: (u32, u32),
     shelf_dir: Option<std::path::PathBuf>,
+    /// `Notification` events seen before the notification act in progress.
+    notif_mark: u32,
     /// Cycles per second of a busy core (calibrated), for tick-free CPU percentages.
     cycles_hz: f64,
     warm_idle: Option<(f64, f64)>,     // (cpu %, private MiB)
@@ -150,6 +153,18 @@ enum Act {
     ShelfProbe,
     ShelfOff,
     ShelfOffCheck,
+    NotifAccess,
+    NotifFeed,
+    NotifCheckPeek,
+    NotifAway,
+    NotifAwayCheck,
+    NotifBack,
+    NotifBackCheck,
+    NotifChipCheck,
+    NotifOpen,
+    NotifOpenCheck,
+    NotifClose,
+    NotifReleaseCheck,
     Report,
 }
 
@@ -200,7 +215,19 @@ const SCRIPT: &[(f64, Act)] = &[
     (41.9, Act::ShelfProbe),
     (42.5, Act::ShelfOff),
     (43.0, Act::ShelfOffCheck),
-    (43.5, Act::Report),
+    (43.6, Act::NotifAccess),
+    (43.8, Act::NotifFeed),
+    (44.6, Act::NotifCheckPeek),
+    (44.7, Act::NotifAway),
+    (45.6, Act::NotifAwayCheck),
+    (45.7, Act::NotifBack),
+    (46.6, Act::NotifBackCheck),
+    (50.4, Act::NotifChipCheck),
+    (50.6, Act::NotifOpen),
+    (52.1, Act::NotifOpenCheck),
+    (52.2, Act::NotifClose),
+    (53.8, Act::NotifReleaseCheck),
+    (54.2, Act::Report),
 ];
 
 const CLIP_TEXT: &str = "Selftest clipboard text";
@@ -260,6 +287,59 @@ fn probe_pixel(x: i32, y: i32) -> Option<(u8, u8, u8)> {
             ((c.0 >> 8) & 0xFF) as u8,
             ((c.0 >> 16) & 0xFF) as u8,
         ))
+    }
+}
+
+/// A synthetic notification as the phone transport would deliver it (ids with bit 32 set).
+fn demo_note(n: u64, title: &str, body: &str) -> EventKind {
+    EventKind::Notification(Notification {
+        id: (1 << 32) | n,
+        app: "Selftest Mail".into(),
+        title: title.into(),
+        body: body.into(),
+        icon: 0,
+        fresh: true,
+        ago_secs: 0,
+        quiet: false,
+    })
+}
+
+/// Every string in the display list of the last frame (what is on screen, as text).
+fn drawn_text(a: &App) -> Vec<String> {
+    a.list
+        .cmds
+        .iter()
+        .filter_map(|c| match c {
+            DrawCmd::Text { text, .. } => Some(text.as_str().to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The application manifest embedded in this exe (resource `RT_MANIFEST` #1), if there is one.
+fn embedded_manifest() -> Option<String> {
+    use windows::Win32::System::LibraryLoader::{
+        FindResourceW, GetModuleHandleW, LoadResource, LockResource, SizeofResource,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CREATEPROCESS_MANIFEST_RESOURCE_ID, RT_MANIFEST,
+    };
+    use windows::core::PCWSTR;
+    unsafe {
+        let module = GetModuleHandleW(None).ok()?;
+        // MAKEINTRESOURCE(CREATEPROCESS_MANIFEST_RESOURCE_ID): an integer id passed in a string slot.
+        let id = PCWSTR(CREATEPROCESS_MANIFEST_RESOURCE_ID as usize as *const u16);
+        let res = FindResourceW(Some(module), id, RT_MANIFEST);
+        if res.is_invalid() {
+            return None;
+        }
+        let size = SizeofResource(Some(module), res) as usize;
+        let data = LoadResource(Some(module), res).ok()?;
+        let ptr = LockResource(data) as *const u8;
+        if ptr.is_null() || size == 0 {
+            return None;
+        }
+        Some(String::from_utf8_lossy(std::slice::from_raw_parts(ptr, size)).into_owned())
     }
 }
 
@@ -340,6 +420,7 @@ pub fn begin(a: &mut App) {
         clip_text_id: 0,
         shelf_mark: (0, 0),
         shelf_dir: None,
+        notif_mark: 0,
         cycles_hz: sys::cycles_per_sec(),
         warm_idle: None,
         released_idle: None,
@@ -860,6 +941,162 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
             }
             if let Some(d) = st.shelf_dir.take() {
                 let _ = std::fs::remove_dir_all(d);
+            }
+        }
+        Act::NotifAccess => {
+            a.collapse(true);
+            // The exe must carry the manifest that lets a registered sparse package give it an identity.
+            match embedded_manifest() {
+                Some(m) if m.contains("<msix") && m.contains("packageName=\"SharkNotch\"") => st
+                    .say("notifications: the exe embeds its application manifest with the sparse-package (<msix>) declaration".into()),
+                Some(_) => st.fail("notifications: the embedded application manifest lacks the <msix> sparse-package declaration".into()),
+                None => st.fail("notifications: the exe has no embedded application manifest (build.rs did not embed it)".into()),
+            }
+            match a.last_notif_access {
+                Some(acc) => st.say(format!(
+                    "notifications: the Windows listener reported {acc:?} (a plain unpackaged exe has no package identity, so NoIdentity is the expected answer here)"
+                )),
+                None => st.fail("notifications: the service never reported an access state".into()),
+            }
+        }
+        Act::NotifFeed => {
+            // A phone-sourced notification while collapsed: the banner must come up by itself.
+            a.bus_tx.send(
+                Source::Phone,
+                demo_note(1, "Selftest ping", "Hello from the iPhone path"),
+            );
+        }
+        Act::NotifCheckPeek => {
+            let text = drawn_text(a);
+            let titled = text.iter().any(|t| t == "Selftest ping");
+            let tagged = text.iter().any(|t| t.contains("iPhone"));
+            if a.shell.presence() == Presence::Peek && titled {
+                st.say(format!(
+                    "notifications: a new notification showed a banner with its title (device tag shown: {tagged})"
+                ));
+            } else {
+                st.fail(format!(
+                    "notifications: no banner for a new notification (presence {:?}, title drawn: {titled})",
+                    a.shell.presence()
+                ));
+            }
+            if !tagged {
+                st.fail(
+                    "notifications: a phone notification's banner does not say where it came from"
+                        .into(),
+                );
+            }
+        }
+        Act::NotifAway => {
+            // A game takes over the screen: the real suspension path (windows hidden, GPU released).
+            a.shell.collapse(now);
+            a.fs_active = true;
+            a.apply_suspension();
+            st.notif_mark = a.bus_counts[Kind::Notification as usize];
+            a.bus_tx.send(
+                Source::Phone,
+                demo_note(2, "Selftest away 1", "arrived during the game"),
+            );
+            a.bus_tx.send(
+                Source::Phone,
+                demo_note(3, "Selftest away 2", "also during the game"),
+            );
+        }
+        Act::NotifAwayCheck => {
+            let got = a.bus_counts[Kind::Notification as usize] - st.notif_mark;
+            let quiet = a.stage.is_none() && a.shell.presence() == Presence::Hidden;
+            st.say(format!(
+                "notifications: {got} arrived while a fullscreen app was in front; windows hidden and GPU released throughout: {quiet}; badge pending: {}",
+                a.host.chips_width() > 0.0
+            ));
+            if got != 2 {
+                st.fail(
+                    "notifications: the notifications sent while away did not reach the module"
+                        .into(),
+                );
+            }
+            if !quiet {
+                st.fail("notifications: something woke the notch (banner, GPU or window) while a fullscreen app was in front".into());
+            }
+            if a.host.chips_width() == 0.0 {
+                st.fail(
+                    "notifications: nothing counted the notifications missed while away".into(),
+                );
+            }
+        }
+        Act::NotifBack => {
+            a.fs_active = false;
+            a.apply_suspension();
+        }
+        Act::NotifBackCheck => {
+            let text = drawn_text(a);
+            let said = text.iter().any(|t| t == "While you were away")
+                && text.iter().any(|t| t == "2 notifications");
+            st.say(format!(
+                "notifications: back from the game, presence {:?}; the summary banner says what was missed: {said}",
+                a.shell.presence()
+            ));
+            if a.shell.presence() != Presence::Peek || !said {
+                st.fail("notifications: no \"while you were away\" summary after returning from fullscreen".into());
+            }
+        }
+        Act::NotifChipCheck => {
+            let (presence, text) = (a.shell.presence(), drawn_text(a));
+            a.maybe_release_gpu(now);
+            let kept = a.stage.is_some();
+            st.say(format!(
+                "notifications: summary tucked away (presence {presence:?}); the missed-count badge is drawn: {}; GPU kept while the badge shows: {kept}",
+                text.iter().any(|t| t == "2")
+            ));
+            if presence != Presence::Collapsed {
+                st.fail("notifications: the summary banner did not tuck itself away".into());
+            }
+            if !kept {
+                st.fail(
+                    "notifications: the GPU stack was released while the missed badge was showing"
+                        .into(),
+                );
+            }
+            if !text.iter().any(|t| t == "2") {
+                st.fail("notifications: the collapsed pill does not show the missed count".into());
+            }
+        }
+        Act::NotifOpen => match a.host.page_of("notifications") {
+            Some(p) => {
+                a.shell.set_page(now, p);
+                a.expand(Trigger::Hotkey);
+            }
+            None => st.fail("the notifications page is not in the ring".into()),
+        },
+        Act::NotifOpenCheck => {
+            let text = drawn_text(a);
+            let rows = ["Selftest ping", "Selftest away 1", "Selftest away 2"]
+                .iter()
+                .filter(|r| text.iter().any(|t| t == **r))
+                .count();
+            let cleared = a.host.chips_width() == 0.0;
+            st.say(format!(
+                "notifications: the open page lists {rows} of 3 notifications; looking at the page cleared the badge: {cleared}"
+            ));
+            if rows != 3 {
+                st.fail("notifications: the page does not list every notification".into());
+            }
+            if !cleared {
+                st.fail("notifications: the missed badge stayed after the page was opened".into());
+            }
+        }
+        Act::NotifClose => a.collapse(true),
+        Act::NotifReleaseCheck => {
+            a.maybe_release_gpu(now);
+            let released = a.stage.is_none();
+            st.say(format!(
+                "notifications: with the badge gone the GPU releases as usual: {released}"
+            ));
+            if !released {
+                st.fail(
+                    "notifications: the GPU stack was not released after the badge went away"
+                        .into(),
+                );
             }
         }
         Act::Report => finish(a, st),

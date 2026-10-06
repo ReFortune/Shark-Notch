@@ -17,6 +17,7 @@ use crate::win::dragdrop::ShelfSlot;
 pub mod audio;
 pub mod clipboard;
 pub mod media;
+pub mod notifications;
 pub mod shelf;
 
 pub struct Services {
@@ -26,6 +27,7 @@ pub struct Services {
     media: Option<media::MediaService>,
     clipboard: Option<clipboard::ClipboardService>,
     shelf: Option<shelf::ShelfService>,
+    notifications: Option<notifications::NotificationsService>,
     /// The shelf worker's inbox, shared with the OLE drop target (empty while the shelf is off).
     shelf_slot: ShelfSlot,
     suspended: bool,
@@ -40,6 +42,7 @@ impl Services {
             media: None,
             clipboard: None,
             shelf: None,
+            notifications: None,
             shelf_slot: Arc::new(Mutex::new(None)),
             suspended: false,
         }
@@ -108,6 +111,28 @@ impl Services {
             }
             _ => {}
         }
+
+        let want_notif = cfg.module_active("notifications");
+        match (want_notif, self.notifications.is_some()) {
+            (true, false) => {
+                self.notifications = notifications::NotificationsService::start(
+                    cfg.notifications.clone(),
+                    self.bus.clone(),
+                    self.images.clone(),
+                );
+            }
+            (false, true) => {
+                if let Some(n) = self.notifications.take() {
+                    n.stop();
+                }
+            }
+            (true, true) => {
+                if let Some(n) = &self.notifications {
+                    n.configure(cfg.notifications.clone());
+                }
+            }
+            (false, false) => {}
+        }
     }
 
     pub fn shelf_slot(&self) -> ShelfSlot {
@@ -145,6 +170,12 @@ impl Services {
                 }
                 true
             }
+            Command::Notifications(c) => {
+                if let Some(n) = &self.notifications {
+                    n.command(*c);
+                }
+                true
+            }
             Command::OpenUrl(_) => false,
         }
     }
@@ -173,6 +204,9 @@ impl Services {
         }
         if let Some(s) = self.shelf.take() {
             s.stop(&self.shelf_slot);
+        }
+        if let Some(n) = self.notifications.take() {
+            n.stop();
         }
     }
 }

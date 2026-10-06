@@ -21,7 +21,8 @@ use notch_core::config::Config;
 use notch_core::demo;
 use notch_core::draw::{Canvas, DrawList, ImageId};
 use notch_core::events::{
-    ClipKind, ClipboardItem, Event, EventKind, FileEntry, MediaSnapshot, Source,
+    ClipKind, ClipboardItem, Event, EventKind, FileEntry, MediaSnapshot, Notification,
+    NotificationAccess, Source,
 };
 use notch_core::geom::{Rect, Vec2};
 use notch_core::module::{Env, ModuleHost};
@@ -45,7 +46,7 @@ impl Content for Demo {
 
 const SCALE: f32 = 2.0;
 const CELL_W: f32 = 440.0;
-const CELL_H: f32 = 230.0;
+const CELL_H: f32 = 290.0;
 
 fn save(pix: &tiny_skia::Pixmap, path: &str) {
     pix.save_png(path).expect("write png");
@@ -310,6 +311,93 @@ fn modules_sheet(out: &str, theme: Theme) {
             file(6, "demo-recording.mp4", 143_000_000, 3, false),
             file(7, "backup.zip", 920_000_000, 0, false),
         ]),
+    )]);
+    // Notifications: some history (one with an app logo), then a trip to a fullscreen game with
+    // two arrivals (the badge), then a fresh one (the banner).
+    images.insert(ImageId(4), fake_art());
+    let note = |id: u64, app: &str, title: &str, body: &str, icon: u64, ago: u32, fresh: bool| {
+        Event::new(
+            if id >= 1 << 32 {
+                Source::Phone
+            } else {
+                Source::Local
+            },
+            EventKind::Notification(Notification {
+                id,
+                app: app.into(),
+                title: title.into(),
+                body: body.into(),
+                icon,
+                fresh,
+                ago_secs: ago,
+                quiet: false,
+            }),
+        )
+    };
+    host.dispatch(vec![
+        Event::new(
+            Source::Local,
+            EventKind::NotificationAccess(NotificationAccess::Granted),
+        ),
+        note(
+            1,
+            "Outlook",
+            "Weekly sync moved",
+            "Now Thursday at 10:30 in Room 4",
+            0,
+            5400,
+            false,
+        ),
+        note(
+            2,
+            "Teams",
+            "Priya Shah",
+            "Can you review the notch PR before standup?",
+            4,
+            1260,
+            false,
+        ),
+        note(
+            3,
+            "Calendar",
+            "Design review in 10 minutes",
+            "Join the meeting from the notch",
+            0,
+            600,
+            false,
+        ),
+        note(
+            4,
+            "Windows Security",
+            "Scan finished",
+            "No threats found",
+            0,
+            45,
+            false,
+        ),
+    ]);
+    host.dispatch(vec![Event::new(Source::Local, EventKind::Suspended(true))]);
+    host.dispatch(vec![
+        note(5, "Teams", "Priya Shah", "ping?", 4, 0, true),
+        note(
+            6,
+            "Mail",
+            "Receipt for your order",
+            "Thanks for shopping with us",
+            0,
+            0,
+            true,
+        ),
+    ]);
+    host.dispatch(vec![Event::new(Source::Local, EventKind::Suspended(false))]);
+    host.dispatch(vec![note(
+        (1 << 32) | 7,
+        "Messages",
+        "Mum",
+        "Don't forget dinner on Sunday!",
+        0,
+        0,
+        true,
     )]);
     let _ = host.take_out();
     let pages = host.pages();
