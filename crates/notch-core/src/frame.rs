@@ -38,6 +38,10 @@ pub struct BurstReport {
     pub max_ms: f64,
     /// Intervals longer than 1.5x the refresh period.
     pub hitches: usize,
+    /// Of those, the frames whose own building took more than half a refresh period: the app's
+    /// drawing was slow. The others were late for a reason outside the frame's own cost (the
+    /// compositor or display did not hand over the next slot in time, or the whole machine stalled).
+    pub app_hitches: usize,
     pub worst_cpu_ms: f64,
     pub avg_cpu_ms: f64,
 }
@@ -64,7 +68,12 @@ impl BurstReport {
             if self.hitches == 0 {
                 "OK".to_string()
             } else {
-                format!("HITCH x{}", self.hitches)
+                format!(
+                    "HITCH x{} (slow drawing {}, late presentation {})",
+                    self.hitches,
+                    self.app_hitches,
+                    self.hitches - self.app_hitches
+                )
             },
         )
     }
@@ -152,13 +161,16 @@ impl FrameRecorder {
         sorted.sort_by(|a, b| a.total_cmp(b));
         let pct = |p: f64| sorted[(((sorted.len() - 1) as f64) * p).round() as usize] as f64;
         let period_ms = self.period * 1000.0;
-        let hitches = if period_ms > 0.0 {
+        let (hitches, app_hitches) = if period_ms > 0.0 {
             self.intervals
                 .iter()
-                .filter(|&&i| f64::from(i) > 1.5 * period_ms)
-                .count()
+                .zip(&self.cpu)
+                .filter(|&(&i, _)| f64::from(i) > 1.5 * period_ms)
+                .fold((0, 0), |(all, app), (_, &cpu)| {
+                    (all + 1, app + usize::from(f64::from(cpu) > 0.5 * period_ms))
+                })
         } else {
-            0
+            (0, 0)
         };
         let rep = BurstReport {
             label: self.label.clone(),
@@ -172,6 +184,7 @@ impl FrameRecorder {
             p99_ms: pct(0.99),
             max_ms: *sorted.last().unwrap() as f64,
             hitches,
+            app_hitches,
             worst_cpu_ms: self.cpu.iter().cloned().fold(0.0f32, f32::max) as f64,
             avg_cpu_ms: self.cpu.iter().map(|&c| f64::from(c)).sum::<f64>() / self.cpu.len() as f64,
         };
@@ -199,6 +212,11 @@ impl FrameRecorder {
 
     pub fn total_hitches(&self) -> usize {
         self.done.iter().map(|r| r.hitches).sum()
+    }
+
+    /// Hitches whose frame was itself slow to build (see [`BurstReport::app_hitches`]).
+    pub fn total_app_hitches(&self) -> usize {
+        self.done.iter().map(|r| r.app_hitches).sum()
     }
 }
 
@@ -256,6 +274,38 @@ mod tests {
         assert!((rep.avg_cpu_ms - 1.5).abs() < 1e-3);
         assert!(rep.format().contains("HITCH x1"));
         assert_eq!(r.total_hitches(), 1);
+        // The late frame cost 1.5 ms to build: the machine was late, not the drawing.
+        assert_eq!(rep.app_hitches, 0);
+        assert!(rep.format().contains("slow drawing 0, late presentation 1"));
+        assert_eq!(r.total_app_hitches(), 0);
+    }
+
+    #[test]
+    fn a_late_frame_that_was_slow_to_draw_is_told_apart_from_a_late_present() {
+        let period = 1.0 / 60.0; // 16.7 ms: "slow" means more than 8.3 ms of drawing
+        let mut r = FrameRecorder::new();
+        r.begin("expand", 0.0, period);
+        let mut t = 0.0;
+        // Frame 1 is late and took 120 ms to draw; frame 2 is late with 1 ms of drawing; frame 3
+        // is on time but took 12 ms (slow, yet it did not make anything late); the rest are fine.
+        for (gap, cpu) in [
+            (period, 1.0),
+            (period * 7.0, 120.0),
+            (period * 2.0, 1.0),
+            (period, 12.0),
+            (period, 1.0),
+        ] {
+            t += gap;
+            r.frame(t, cpu);
+        }
+        let rep = r.finish().unwrap();
+        assert_eq!((rep.hitches, rep.app_hitches), (2, 1));
+        assert!(
+            rep.format()
+                .contains("HITCH x2 (slow drawing 1, late presentation 1)")
+        );
+        assert_eq!(r.total_hitches(), 2);
+        assert_eq!(r.total_app_hitches(), 1);
     }
 
     #[test]

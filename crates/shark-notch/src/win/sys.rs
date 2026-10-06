@@ -166,6 +166,8 @@ pub struct ProcMetrics {
     pub private_ws: u64,
     pub working_set: u64,
     pub private_commit: u64,
+    /// The largest the working set has been so far, bytes.
+    pub peak_working_set: u64,
     /// Total CPU time (kernel + user) used by the process so far, seconds. Advances in scheduler
     /// ticks (~15.6 ms), so it cannot resolve a 0.01 % load over a few seconds; see `cycles`.
     pub cpu_secs: f64,
@@ -195,6 +197,7 @@ pub fn proc_metrics() -> ProcMetrics {
             m.private_ws = c.PrivateWorkingSetSize as u64;
             m.working_set = c.WorkingSetSize as u64;
             m.private_commit = c.PrivateUsage as u64;
+            m.peak_working_set = c.PeakWorkingSetSize as u64;
         }
         let (mut c0, mut e0, mut k, mut u) = (
             FILETIME::default(),

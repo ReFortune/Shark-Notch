@@ -134,6 +134,12 @@ pub struct SelfTest {
     cycles_hz: f64,
     warm_idle: Option<(f64, f64)>,     // (cpu %, private MiB)
     released_idle: Option<(f64, f64)>, // (cpu %, private MiB)
+    /// Committed MiB at the first idle measurement with the GPU released (the floor to compare the
+    /// end of the session with).
+    released_commit: f64,
+    /// What the process held after the whole session, collapsed and with the GPU released:
+    /// `(private WS, commit)` in MiB.
+    final_memory: Option<(f64, f64)>,
 }
 
 /// Bus-event counts at a point of the iPhone-link scenario.
@@ -291,6 +297,8 @@ enum Act {
     PhoneBusyCheck,
     PhoneFreed,
     PhoneFreedOff,
+    FinalRelease,
+    FinalMemory,
     Report,
 }
 
@@ -424,7 +432,9 @@ const SCRIPT: &[(f64, Act)] = &[
     (113.4, Act::PhoneBusyCheck),
     (113.5, Act::PhoneFreed),
     (114.0, Act::PhoneFreedOff),
-    (114.4, Act::Report),
+    (114.4, Act::FinalRelease),
+    (116.0, Act::FinalMemory),
+    (116.4, Act::Report),
 ];
 
 const CLIP_TEXT: &str = "Selftest clipboard text";
@@ -725,6 +735,8 @@ pub fn begin(a: &mut App) {
         cycles_hz: sys::cycles_per_sec(),
         warm_idle: None,
         released_idle: None,
+        released_commit: 0.0,
+        final_memory: None,
     };
     st.say(format!(
         "begin; pid {}; light-probe={} exclude-from-capture={}",
@@ -840,7 +852,8 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
                 if warm {
                     st.warm_idle = Some((cpu, mib))
                 } else {
-                    st.released_idle = Some((cpu, mib))
+                    st.released_idle = Some((cpu, mib));
+                    st.released_commit = sys::mib(end.m.private_commit);
                 }
             }
         }
@@ -2316,6 +2329,23 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
                 st.fail("phone: the listener survived [phone] listen = false (second time)".into());
             }
         }
+        Act::FinalRelease => {
+            // Every page has been opened and every module exercised by now. Close it all and let
+            // the GPU go: what is still held is what a long session leaves behind.
+            a.collapse(true);
+            a.release_gpu();
+        }
+        Act::FinalMemory => {
+            let m = sys::proc_metrics();
+            let (ws, commit) = (sys::mib(m.private_ws), sys::mib(m.private_commit));
+            st.final_memory = Some((ws, commit));
+            st.say(format!(
+                "memory after the whole session (every page opened, every module exercised), collapsed, GPU released: private WS {ws:.1} MiB, working set {:.1} MiB, commit {commit:.1} MiB (commit at the first idle measurement with the GPU released: {:.1} MiB; the working set peaked at {:.1} MiB)",
+                sys::mib(m.working_set),
+                st.released_commit,
+                sys::mib(m.peak_working_set)
+            ));
+        }
         Act::Report => finish(a, st),
     }
 }
@@ -2338,16 +2368,23 @@ fn finish(a: &mut App, st: &mut SelfTest) {
     let _ = writeln!(report, "{}", a.recorder.format_all());
     let _ = writeln!(
         report,
-        "frames presented: {}  errors: {}  total hitches: {}",
+        "frames presented: {}  errors: {}  total hitches: {} (of which the frame itself was slow to draw: {})",
         a.frames_presented,
         a.present_errors,
-        a.recorder.total_hitches()
+        a.recorder.total_hitches(),
+        a.recorder.total_app_hitches()
     );
     if let (Some(w), Some(r)) = (st.warm_idle, st.released_idle) {
         let _ = writeln!(
             report,
             "memory: private working set {:.1} MiB (GPU warm) -> {:.1} MiB (GPU released); idle CPU {:.4}% / {:.4}%",
             w.1, r.1, w.0, r.0
+        );
+    }
+    if let Some((ws, commit)) = st.final_memory {
+        let _ = writeln!(
+            report,
+            "memory after the whole session, collapsed and with the GPU released: private working set {ws:.1} MiB, commit {commit:.1} MiB"
         );
     }
     st.say(report.trim_end().to_string());

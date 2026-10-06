@@ -1,5 +1,5 @@
-//! Notifications: Windows toasts (and, from phase 11, the iPhone's) as a short list, with a brief
-//! banner for each new one that then tucks away by itself.
+//! Notifications: Windows toasts (and, from phase 11, banners an iPhone shortcut sends) as a short
+//! list, with a brief banner for each new one that then tucks away by itself.
 //!
 //! * **Banner, then gone.** A fresh notification asks the shell for a peek of a few seconds; nothing
 //!   stays on screen and nothing needs a click. The list is a page you open when you want it.

@@ -79,7 +79,7 @@ address and token in one place, keep them in a file in iCloud Drive and read it 
    variable.
 
 Add the shortcut to the Home Screen, or bind it to Back Tap or the Action Button. On the PC the
-notch peeks "Copied … iPhone" and the item sits in the clipboard history. It is **not** put on the
+notch peeks "Copied on iPhone" and the item sits in the clipboard history, tagged "iPhone". It is **not** put on the
 PC's live clipboard: you click it when you want it, so the phone can never replace what you are
 about to paste.
 
