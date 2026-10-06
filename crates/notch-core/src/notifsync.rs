@@ -85,7 +85,7 @@ impl Tracker {
 }
 
 /// Collapse whitespace and drop control characters, then cut to `max` characters with an ellipsis.
-fn tidy(s: &str, max: usize) -> String {
+pub fn tidy(s: &str, max: usize) -> String {
     let mut out = String::with_capacity(s.len().min(max * 4));
     let mut pending_space = false;
     let mut count = 0usize;

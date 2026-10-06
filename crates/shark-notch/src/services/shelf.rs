@@ -33,8 +33,10 @@ const THUMB_EDGE: i32 = 96;
 const BATCH: usize = 50;
 
 pub enum Req {
-    /// Paths dropped on the notch (or delivered by the iPhone listener).
+    /// Paths dropped on the notch.
     Dropped(Vec<PathBuf>),
+    /// A file the iPhone sent, already saved in the inbox folder.
+    Received(PathBuf),
     Open(String),
     Release(Vec<u64>),
     Quit,
@@ -87,10 +89,9 @@ impl ShelfService {
         let _ = self.tx.send(req);
     }
 
-    /// Hand paths to the worker as if they had been dropped (the iPhone listener, phase 11).
-    #[allow(dead_code)]
-    pub fn add_paths(&self, paths: Vec<PathBuf>) {
-        let _ = self.tx.send(Req::Dropped(paths));
+    /// A file the iPhone sent: it goes on the shelf like a dropped one, marked as from the phone.
+    pub fn add_received(&self, path: PathBuf) {
+        let _ = self.tx.send(Req::Received(path));
     }
 
     pub fn stop(mut self, slot: &ShelfSlot) {
@@ -117,7 +118,8 @@ fn run(rx: Receiver<Req>, bus: BusSender, images: Arc<ImageCache>) {
     while let Ok(req) = rx.recv() {
         match req {
             Req::Quit => break,
-            Req::Dropped(paths) => ingest(&paths, &bus, &images),
+            Req::Dropped(paths) => ingest(&paths, Source::Local, &bus, &images),
+            Req::Received(path) => ingest(&[path], Source::Phone, &bus, &images),
             Req::Open(p) => open(&p),
             Req::Release(ids) => {
                 for id in ids {
@@ -142,7 +144,7 @@ pub fn describe(path: &Path) -> (String, u64, bool) {
     }
 }
 
-fn ingest(paths: &[PathBuf], bus: &BusSender, images: &ImageCache) {
+fn ingest(paths: &[PathBuf], source: Source, bus: &BusSender, images: &ImageCache) {
     for chunk in paths.chunks(BATCH) {
         let entries: Vec<FileEntry> = chunk
             .iter()
@@ -162,7 +164,7 @@ fn ingest(paths: &[PathBuf], bus: &BusSender, images: &ImageCache) {
             })
             .collect();
         if !entries.is_empty() {
-            bus.send(Source::Local, EventKind::FileDropped(entries));
+            bus.send(source, EventKind::FileDropped(entries));
         }
     }
 }

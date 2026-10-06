@@ -127,7 +127,6 @@ impl ClipboardService {
     }
 
     /// Add text that arrived from somewhere other than this PC's clipboard (the iPhone).
-    #[allow(dead_code)] // used by the iPhone listener (phase 11)
     pub fn add_text(&self, source: Source, text: String) {
         self.post(Req::AddText(source, text));
     }
@@ -486,8 +485,9 @@ pub fn put_dib(owner: HWND, w: u32, h: u32, bgra_premultiplied: &[u8]) -> bool {
     }
 }
 
-/// For the self-test: put text on the clipboard flagged "exclude from monitoring" (as a password
-/// manager would); the service must ignore it.
+/// Put text on the clipboard flagged "exclude from monitoring", as a password manager does: the
+/// clipboard history and Windows' own clipboard history and sync ignore it. (The pairing token goes
+/// this way; the self-test also uses it to check the service really ignores such text.)
 pub fn put_excluded_text(owner: HWND, text: &str) -> bool {
     let wt = wide(text);
     let bytes: Vec<u8> = wt.iter().flat_map(|u| u.to_le_bytes()).collect();

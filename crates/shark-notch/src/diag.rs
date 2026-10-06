@@ -9,8 +9,11 @@
 //! * the cost of warming the GPU stack from cold;
 //! * (optionally) that the notch is actually on screen: a GDI read of the composed desktop.
 
+mod phone_probe;
+
 use std::fmt::Write as _;
 
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -118,10 +121,44 @@ pub struct SelfTest {
     stats_ws_before: f64,
     /// `Control` events seen at a point of the command-centre scenario.
     control_mark: u32,
+    /// The iPhone-link scenario: the client thread's answer (when it has one), the port and the
+    /// tokens in use, bus counts before it, and a CPU window while the listener sits idle.
+    phone_job: Option<Receiver<Vec<phone_probe::Line>>>,
+    phone_port: u16,
+    phone_token: String,
+    phone_mark: PhoneMark,
+    phone_idle: Option<Mark>,
     /// Cycles per second of a busy core (calibrated), for tick-free CPU percentages.
     cycles_hz: f64,
     warm_idle: Option<(f64, f64)>,     // (cpu %, private MiB)
     released_idle: Option<(f64, f64)>, // (cpu %, private MiB)
+}
+
+/// Bus-event counts at a point of the iPhone-link scenario.
+#[derive(Clone, Copy, Default)]
+struct PhoneMark {
+    battery: u32,
+    focus: u32,
+    notification: u32,
+    inbound: u32,
+    clipboard: u32,
+    files: u32,
+    link: u32,
+}
+
+impl PhoneMark {
+    fn now(a: &App) -> PhoneMark {
+        let n = |k: Kind| a.bus_counts[k as usize];
+        PhoneMark {
+            battery: n(Kind::Battery),
+            focus: n(Kind::FocusChanged),
+            notification: n(Kind::Notification),
+            inbound: n(Kind::Inbound),
+            clipboard: n(Kind::ClipboardItem),
+            files: n(Kind::FileDropped),
+            link: n(Kind::PhoneLink),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -234,6 +271,20 @@ enum Act {
     ControlClose,
     ControlSettled,
     ControlQuietCheck,
+    PhoneOn,
+    PhoneRun,
+    PhoneCheck,
+    PhonePage,
+    PhonePageCheck,
+    PhoneCopyCheck,
+    PhoneNewToken,
+    PhoneNewTokenCheck,
+    PhoneNewTokenResult,
+    PhoneClose,
+    PhoneIdleBegin,
+    PhoneIdleEnd,
+    PhoneOff,
+    PhoneOffCheck,
     Report,
 }
 
@@ -349,7 +400,21 @@ const SCRIPT: &[(f64, Act)] = &[
     (97.6, Act::ControlClose),
     (98.3, Act::ControlSettled),
     (100.9, Act::ControlQuietCheck),
-    (101.3, Act::Report),
+    (101.3, Act::PhoneOn),
+    (101.8, Act::PhoneRun),
+    (103.2, Act::PhoneCheck),
+    (103.4, Act::PhonePage),
+    (105.4, Act::PhonePageCheck),
+    (105.9, Act::PhoneCopyCheck),
+    (106.0, Act::PhoneNewToken),
+    (106.3, Act::PhoneNewTokenCheck),
+    (107.4, Act::PhoneNewTokenResult),
+    (107.5, Act::PhoneClose),
+    (108.8, Act::PhoneIdleBegin),
+    (111.3, Act::PhoneIdleEnd),
+    (111.5, Act::PhoneOff),
+    (112.4, Act::PhoneOffCheck),
+    (112.8, Act::Report),
 ];
 
 const CLIP_TEXT: &str = "Selftest clipboard text";
@@ -477,6 +542,43 @@ fn unix_now() -> i64 {
         .map_or(0, |d| d.as_secs() as i64)
 }
 
+/// CPU use between two marks, as a percentage of one core: exact cycle counts when the system
+/// gives them, scheduler ticks otherwise.
+fn cpu_between(st: &SelfTest, b: &Mark, e: &Mark) -> f64 {
+    let secs = (e.t - b.t).max(1e-3);
+    if st.cycles_hz > 1e6 && e.m.cycles > 0 {
+        e.m.cycles.saturating_sub(b.m.cycles) as f64 / st.cycles_hz / secs * 100.0
+    } else {
+        (e.m.cpu_secs - b.m.cpu_secs) / secs * 100.0
+    }
+}
+
+/// Start `job` on its own thread; its answer arrives on the returned channel. (The script never
+/// waits on a socket: it looks at the answer in a later step.)
+fn spawn_job(
+    name: &str,
+    job: impl FnOnce() -> Vec<phone_probe::Line> + Send + 'static,
+) -> Receiver<Vec<phone_probe::Line>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = std::thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            let _ = tx.send(job());
+        });
+    rx
+}
+
+/// Report a client's checks and fail the ones that did not pass.
+fn report_lines(st: &mut SelfTest, lines: Vec<phone_probe::Line>) {
+    for (ok, text) in lines {
+        if ok {
+            st.say(format!("phone: {text}"));
+        } else {
+            st.fail(format!("phone: {text}"));
+        }
+    }
+}
+
 /// A real mouse click on the region `id` of the last frame, through the app's own mouse handler.
 fn click_region(a: &mut App, id: u32) -> bool {
     use windows::Win32::Foundation::{LPARAM, WPARAM};
@@ -590,6 +692,11 @@ pub fn begin(a: &mut App) {
         stats_begin: None,
         stats_ws_before: 0.0,
         control_mark: 0,
+        phone_job: None,
+        phone_port: 0,
+        phone_token: String::new(),
+        phone_mark: PhoneMark::default(),
+        phone_idle: None,
         cycles_hz: sys::cycles_per_sec(),
         warm_idle: None,
         released_idle: None,
@@ -1898,6 +2005,232 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
                 st.fail("control: readings kept arriving after the page was closed".into());
             }
         }
+        Act::PhoneOn => {
+            // Until the user switches the link on there is nothing: no thread, no open port.
+            let none = a.services.phone_port().is_none();
+            st.say(format!(
+                "phone: until [phone] listen is switched on there is no listener and no open port: {none}"
+            ));
+            if !none {
+                st.fail("phone: a listener existed before the link was switched on".into());
+            }
+            st.phone_mark = PhoneMark::now(a);
+            reconfigure(a, |c| {
+                c.phone.listen = true;
+                c.phone.port = 0;
+                c.phone.max_file_mib = 1;
+            });
+            match a.services.phone_port() {
+                Some(p) if p != 0 => {
+                    st.phone_port = p;
+                    st.say(format!(
+                        "phone: switched on; the system picked port {p} ([phone] port = 0)"
+                    ));
+                }
+                _ => st.fail("phone: switching the link on did not open a port".into()),
+            }
+        }
+        Act::PhoneRun => match a.services.phone_token() {
+            Some(token) if st.phone_port != 0 => {
+                st.phone_token = token.clone();
+                let (port, inbox) = (st.phone_port, paths::data_dir().join("phone-inbox"));
+                st.phone_job = Some(spawn_job("selftest-phone", move || {
+                    phone_probe::exchange(port, &token, &inbox)
+                }));
+            }
+            _ => st.fail("phone: the listener has no token to test with".into()),
+        },
+        Act::PhoneCheck => {
+            match st.phone_job.take().and_then(|rx| rx.try_recv().ok()) {
+                Some(lines) => report_lines(st, lines),
+                None => st.fail("phone: the test client had not finished after 1.4 s".into()),
+            }
+            // What the app did with what the phone sent.
+            let (m, n) = (st.phone_mark, PhoneMark::now(a));
+            let clip = a.last_clip.as_ref().map(|c| c.preview.to_string());
+            let files = a
+                .last_files
+                .as_ref()
+                .is_some_and(|f| f.iter().any(|e| &*e.name == "evil.txt"));
+            let link = a.last_phone_link.clone();
+            st.say(format!(
+                "phone: events since the link was switched on: battery {}, Focus {}, notification {}, inbound {}, clipboard item {} (last {clip:?}), file(s) on the shelf {} (evil.txt among them: {files}), link state {}",
+                n.battery - m.battery,
+                n.focus - m.focus,
+                n.notification - m.notification,
+                n.inbound - m.inbound,
+                n.clipboard - m.clipboard,
+                n.files - m.files,
+                n.link - m.link,
+            ));
+            for (label, ok) in [
+                (
+                    "one battery report reached the bus",
+                    n.battery - m.battery == 1,
+                ),
+                ("one Focus report reached the bus", n.focus - m.focus == 1),
+                (
+                    "the phone's notification reached the bus",
+                    n.notification > m.notification,
+                ),
+                (
+                    "text and both files were handed on (3 inbound)",
+                    n.inbound - m.inbound == 3,
+                ),
+                (
+                    "the text is in the clipboard history",
+                    n.clipboard > m.clipboard && clip.as_deref() == Some("from the phone"),
+                ),
+                (
+                    "the files are on the shelf",
+                    n.files - m.files >= 2 && files,
+                ),
+                (
+                    "the link published its state",
+                    link.as_ref().is_some_and(|l| l.port == st.phone_port),
+                ),
+            ] {
+                if !ok {
+                    st.fail(format!("phone: {label}: no"));
+                }
+            }
+            // The phone's Focus is on: the pill carries its chip.
+            let owners = a.host.chip_owners();
+            st.say(format!(
+                "phone: chips on the pill while the phone's Focus is on: {owners:?}"
+            ));
+            if !owners.contains(&"phone") {
+                st.fail("phone: the phone's Focus has no chip on the pill".into());
+            }
+            // From here the clipboard history must stay as it is: the token never enters it.
+            st.clip_mark = clip_events(a);
+        }
+        Act::PhonePage => match a.host.page_of("phone") {
+            Some(p) => {
+                a.shell.set_page(now, p);
+                a.expand(Trigger::Hotkey);
+            }
+            None => st.fail("the phone page is not in the ring".into()),
+        },
+        Act::PhonePageCheck => {
+            let text = drawn_text(a);
+            let has = |s: &str| text.iter().any(|t| t == s);
+            let url = text.iter().find(|t| t.starts_with("http://")).cloned();
+            let last = text.iter().find(|t| t.starts_with("Last: ")).cloned();
+            let link = a.last_phone_link.clone();
+            st.say(format!(
+                "phone: the page says Listening: {}; where to send: {url:?}; the phone's battery 73%: {}; its Focus 'Work': {}; {last:?}; link state {:?}",
+                has("Listening"),
+                has("73%"),
+                has("Work"),
+                link.as_deref().map(|l| (l.accepted, l.refused))
+            ));
+            for (label, ok) in [
+                ("the page shows the listener as listening", has("Listening")),
+                (
+                    "the page shows an address to send to ending in the port",
+                    url.as_deref()
+                        .is_some_and(|u| u.ends_with(&format!(":{}", st.phone_port))),
+                ),
+                ("the phone's battery arrived on the page", has("73%")),
+                ("the phone's Focus arrived on the page", has("Work")),
+                (
+                    "the page counts what was accepted (7) and refused (17)",
+                    link.as_ref()
+                        .is_some_and(|l| l.accepted == 7 && l.refused == 17),
+                ),
+                (
+                    "the page offers the token",
+                    has("Copy token") && has("New token"),
+                ),
+            ] {
+                if !ok {
+                    st.fail(format!("phone: {label}: no ({text:?})"));
+                }
+            }
+            if !click_region(a, 1) {
+                st.fail("phone: the page has no Copy token button to click".into());
+            }
+        }
+        Act::PhoneCopyCheck => {
+            let on_clipboard = clip::current_text(a.ctrl);
+            let ok = on_clipboard.is_some() && on_clipboard == a.services.phone_token();
+            let in_history = clip_events(a) != st.clip_mark;
+            st.say(format!(
+                "phone: Copy token put the token on the clipboard: {ok}; it was added to the clipboard history: {in_history}"
+            ));
+            if !ok {
+                st.fail("phone: Copy token did not put the token on the clipboard".into());
+            }
+            if in_history {
+                st.fail("phone: the token showed up in the clipboard history".into());
+            }
+        }
+        Act::PhoneNewToken => {
+            // Two taps: the first one only asks "sure?".
+            let (first, second) = (click_region(a, 2), click_region(a, 2));
+            if !(first && second) {
+                st.fail("phone: the page has no New token button to click".into());
+            }
+        }
+        Act::PhoneNewTokenCheck => {
+            let old = std::mem::take(&mut st.phone_token);
+            match a.services.phone_token() {
+                Some(new) if new != old => {
+                    let (port, o, n) = (st.phone_port, old, new.clone());
+                    st.phone_job = Some(spawn_job("selftest-phone", move || {
+                        phone_probe::after_new_token(port, &o, &n)
+                    }));
+                    st.phone_token = new;
+                }
+                _ => st.fail("phone: tapping New token twice did not change the token".into()),
+            }
+        }
+        Act::PhoneNewTokenResult => match st.phone_job.take().and_then(|rx| rx.try_recv().ok()) {
+            Some(lines) => report_lines(st, lines),
+            None => st.fail("phone: the second test client had not finished".into()),
+        },
+        Act::PhoneClose => a.collapse(true),
+        Act::PhoneIdleBegin => st.phone_idle = Some(mark()),
+        Act::PhoneIdleEnd => {
+            let end = mark();
+            if let Some(b) = st.phone_idle.take() {
+                let cpu = cpu_between(st, &b, &end);
+                let secs = end.t - b.t;
+                st.say(format!(
+                    "phone: listening with nobody connected and the page closed, {secs:.1} s: cpu {cpu:.4}%  private WS {:.1} MiB (a thread asleep in accept(); no timer, no polling)",
+                    sys::mib(end.m.private_ws)
+                ));
+                if cpu > 1.0 {
+                    st.fail(format!("phone: an idle listener used {cpu:.2}% of a core"));
+                }
+            }
+        }
+        Act::PhoneOff => {
+            reconfigure(a, |c| c.phone.listen = false);
+            let gone = a.services.phone_port().is_none();
+            st.say(format!(
+                "phone: switched off again; the listener is gone: {gone}"
+            ));
+            if !gone {
+                st.fail("phone: the listener survived [phone] listen = false".into());
+            }
+            // What the phone last said is no longer current: its Focus chip goes with the link.
+            let owners = a.host.chip_owners();
+            if owners.contains(&"phone") {
+                st.fail(format!(
+                    "phone: the Focus chip stayed on the pill after the link was switched off (chips: {owners:?})"
+                ));
+            }
+            let port = st.phone_port;
+            st.phone_job = Some(spawn_job("selftest-phone", move || {
+                vec![phone_probe::port_closed(port)]
+            }));
+        }
+        Act::PhoneOffCheck => match st.phone_job.take().and_then(|rx| rx.try_recv().ok()) {
+            Some(lines) => report_lines(st, lines),
+            None => st.fail("phone: the closed-port check had not finished".into()),
+        },
         Act::Report => finish(a, st),
     }
 }

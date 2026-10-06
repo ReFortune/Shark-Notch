@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use notch_core::bus::BusSender;
 use notch_core::config::Config;
 use notch_core::image::ImageCache;
-use notch_core::module::{Command, ControlCmd};
+use notch_core::module::{Command, ControlCmd, PhoneCmd};
 
 use crate::win::dragdrop::ShelfSlot;
 
@@ -21,6 +21,7 @@ pub mod control;
 pub mod downloads;
 pub mod media;
 pub mod notifications;
+pub mod phone;
 pub mod privacy;
 pub mod shelf;
 pub mod stats;
@@ -39,6 +40,8 @@ pub struct Services {
     privacy: Option<privacy::PrivacyService>,
     downloads: Option<downloads::DownloadsService>,
     stats: Option<stats::StatsService>,
+    /// The iPhone link's listener: exists only while `[phone] listen` is on.
+    phone: Option<phone::PhoneService>,
     /// Started the first time the command-centre page asks for something.
     control: Option<control::ControlService>,
     /// Whether the configuration wants the privacy watcher (it is stopped while suspended).
@@ -63,6 +66,7 @@ impl Services {
             privacy: None,
             downloads: None,
             stats: None,
+            phone: None,
             control: None,
             want_privacy: false,
             shelf_slot: Arc::new(Mutex::new(None)),
@@ -209,6 +213,26 @@ impl Services {
             _ => {}
         }
 
+        // The iPhone listener: a port is open only while the user has switched the link on. A new
+        // port means a restart; the other settings apply to the running listener.
+        let want_phone = cfg.module_active("phone") && cfg.phone.listen;
+        let features = phone::Features::of(cfg);
+        if self
+            .phone
+            .as_ref()
+            .is_some_and(|p| !want_phone || p.is_dead() || p.setting_port() != cfg.phone.port)
+            && let Some(p) = self.phone.take()
+        {
+            p.stop();
+        }
+        if want_phone {
+            if let Some(p) = &self.phone {
+                p.configure(&cfg.phone, features);
+            } else {
+                self.phone = phone::PhoneService::start(&cfg.phone, features, self.bus.clone());
+            }
+        }
+
         // The command centre's worker is created by its first request (see `command`); here it is
         // only stopped when the module goes away.
         if !cfg.module_active("control")
@@ -260,10 +284,19 @@ impl Services {
         self.shelf.as_ref()
     }
 
-    /// The clipboard service, if its module is active (the iPhone listener adds items through it).
-    #[allow(dead_code)] // used by the iPhone listener (phase 11)
+    /// The clipboard service, if its module is active (text from the iPhone is added through it).
     pub fn clipboard(&self) -> Option<&clipboard::ClipboardService> {
         self.clipboard.as_ref()
+    }
+
+    /// The iPhone link's pairing token, once the listener has one.
+    pub fn phone_token(&self) -> Option<String> {
+        self.phone.as_ref().and_then(|p| p.token())
+    }
+
+    /// The port the iPhone listener is on (the configured one, or the one the system picked).
+    pub fn phone_port(&self) -> Option<u16> {
+        self.phone.as_ref().map(|p| p.port())
     }
 
     /// Route a module's request to the service that owns it. Returns whether it was handled.
@@ -329,6 +362,22 @@ impl Services {
                 }
                 true
             }
+            Command::Phone(c) => {
+                // Putting the token on the clipboard needs the app's window: `App::exec` does it.
+                if *c == PhoneCmd::CopyToken {
+                    return false;
+                }
+                if let Some(p) = &self.phone {
+                    match c {
+                        PhoneCmd::NewToken => {
+                            p.new_token();
+                        }
+                        PhoneCmd::Refresh => p.refresh(),
+                        PhoneCmd::CopyToken => {}
+                    }
+                }
+                true
+            }
             // Handled by the app itself (they need the UI thread or the config path).
             Command::OpenUrl(_) | Command::OpenConfig | Command::Chime | Command::Reveal(_) => {
                 false
@@ -382,6 +431,9 @@ impl Services {
         }
         if let Some(c) = self.control.take() {
             c.stop();
+        }
+        if let Some(p) = self.phone.take() {
+            p.stop();
         }
         // Last: it flushes whatever the modules saved a moment ago.
         if let Some(s) = self.store.take() {

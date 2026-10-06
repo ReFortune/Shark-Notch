@@ -175,6 +175,31 @@ pub struct ControlState {
     pub dnd: Option<bool>,
 }
 
+/// The state of the iPhone link: where the PC listens and what it last heard.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct PhoneLink {
+    /// Addresses the phone can use, as `ip:port`.
+    pub addrs: Vec<Arc<str>>,
+    pub port: u16,
+    /// Why the link is not listening (the port is taken, ...).
+    pub error: Option<Arc<str>>,
+    /// The last request that was accepted: when (unix seconds) and what ("clipboard", "file").
+    pub last: Option<(i64, Arc<str>)>,
+    /// Requests accepted / refused since the listener started.
+    pub accepted: u32,
+    pub refused: u32,
+}
+
+/// Something that arrived from the phone, for the app to put where it belongs. (The link never
+/// calls other services itself: it only says what came in.)
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Inbound {
+    /// Text or a link for the clipboard history.
+    Text(Arc<str>),
+    /// A file, already saved in the inbox folder, for the shelf.
+    File(Arc<str>),
+}
+
 /// A value read back from the small persistent store (`None` = nothing saved under that key yet).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoreItem {
@@ -284,6 +309,10 @@ pub enum EventKind {
     Stats(Arc<StatsSnapshot>),
     /// The command centre's controls, as read (answer to `ControlCmd::Refresh` and to changes).
     Control(Arc<ControlState>),
+    /// The state of the iPhone link.
+    PhoneLink(Arc<PhoneLink>),
+    /// Something the phone sent that belongs to another service (see [`Inbound`]).
+    Inbound(Inbound),
 }
 
 /// Fieldless mirror of [`EventKind`], used for subscription masks.
@@ -310,10 +339,12 @@ pub enum Kind {
     DownloadDone,
     Stats,
     Control,
+    PhoneLink,
+    Inbound,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 20] = [
+    pub const ALL: [Kind; 22] = [
         Kind::ConfigChanged,
         Kind::ThemeChanged,
         Kind::Suspended,
@@ -334,6 +365,8 @@ impl Kind {
         Kind::DownloadDone,
         Kind::Stats,
         Kind::Control,
+        Kind::PhoneLink,
+        Kind::Inbound,
     ];
 }
 
@@ -360,6 +393,8 @@ impl EventKind {
             EventKind::DownloadDone(_) => Kind::DownloadDone,
             EventKind::Stats(_) => Kind::Stats,
             EventKind::Control(_) => Kind::Control,
+            EventKind::PhoneLink(_) => Kind::PhoneLink,
+            EventKind::Inbound(_) => Kind::Inbound,
         }
     }
 }
@@ -453,6 +488,8 @@ mod tests {
                 path: "C:\\a.zip".into(),
                 bytes: 1,
             }),
+            EventKind::PhoneLink(Arc::new(PhoneLink::default())),
+            EventKind::Inbound(Inbound::Text("hello".into())),
             EventKind::Control(Arc::new(ControlState {
                 volume: None,
                 brightness: None,

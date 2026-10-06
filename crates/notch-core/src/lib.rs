@@ -27,6 +27,7 @@ pub mod module;
 pub mod modules;
 pub mod notifsync;
 pub mod path;
+pub mod phone;
 pub mod pomodoro;
 pub mod privacy;
 pub mod raster;

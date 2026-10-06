@@ -127,6 +127,17 @@ pub enum ControlCmd {
     OpenRadioSettings,
 }
 
+/// Operations on the iPhone link.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PhoneCmd {
+    /// Put the pairing token on the clipboard (excluded from clipboard history and sync).
+    CopyToken,
+    /// Make a new token: the old one stops working at once.
+    NewToken,
+    /// Look at the network addresses again (the page is open and they may have changed).
+    Refresh,
+}
+
 /// Operations on the small persistent store (one JSON document per key, under the app's data folder).
 #[derive(Clone, Debug, PartialEq)]
 pub enum StoreCmd {
@@ -154,6 +165,7 @@ pub enum Command {
     Store(StoreCmd),
     Stats(StatsCmd),
     Control(ControlCmd),
+    Phone(PhoneCmd),
 }
 
 /// Requests that concern the shell itself.

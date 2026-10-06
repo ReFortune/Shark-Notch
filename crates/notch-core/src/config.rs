@@ -509,6 +509,40 @@ impl Default for ControlCfg {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+pub struct PhoneCfg {
+    /// The page exists. (It explains how to switch the link on.)
+    pub enabled: bool,
+    /// The link itself: a small server on your network. Off by default: a listener is something
+    /// you switch on, knowing what it is.
+    pub listen: bool,
+    /// TCP port the PC listens on. 0 picks a free one (the page shows which).
+    pub port: u16,
+    /// Only accept phones on the same network as one of this PC's own addresses (not merely any
+    /// private address, which would include a network reached through a router or VPN).
+    pub same_network_only: bool,
+    /// Largest file accepted, in MiB.
+    pub max_file_mib: u32,
+    /// Received files older than this many days are deleted from the inbox folder.
+    pub keep_days: u32,
+    pub peek_secs: f32,
+}
+
+impl Default for PhoneCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            listen: false,
+            port: 8765,
+            same_network_only: true,
+            max_file_mib: 100,
+            keep_days: 14,
+            peek_secs: 4.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Modules {
     /// Page order. Unknown ids are ignored; modules that are disabled are skipped.
     pub order: Vec<String>,
@@ -527,6 +561,7 @@ impl Default for Modules {
                 "live".into(),
                 "stats".into(),
                 "control".into(),
+                "phone".into(),
                 "clock".into(),
             ],
         }
@@ -553,6 +588,7 @@ pub struct Config {
     pub live: LiveCfg,
     pub stats: StatsCfg,
     pub control: ControlCfg,
+    pub phone: PhoneCfg,
     pub clock: ClockCfg,
 }
 
@@ -793,6 +829,15 @@ impl Config {
             "stats.interval_secs",
             w,
         );
+        clamp_u(
+            &mut self.phone.max_file_mib,
+            1,
+            4096,
+            "phone.max_file_mib",
+            w,
+        );
+        clamp_u(&mut self.phone.keep_days, 1, 3650, "phone.keep_days", w);
+        clamp_f(&mut self.phone.peek_secs, 1.0, 30.0, "phone.peek_secs", w);
         clamp_f(
             &mut self.control.interval_secs,
             0.5,
@@ -891,6 +936,7 @@ impl Config {
             "live" => self.live.enabled,
             "stats" => self.stats.enabled,
             "control" => self.control.enabled,
+            "phone" => self.phone.enabled,
             _ => false,
         };
         enabled && self.modules.order.iter().any(|m| m == id)
@@ -982,7 +1028,7 @@ show_missed_indicator = true
 peek_over_fullscreen = false
 
 [modules]
-order = ["media", "clipboard", "shelf", "notifications", "calendar", "pomodoro", "live", "stats", "control", "clock"]   # page order; a module that is disabled in its own section is skipped
+order = ["media", "clipboard", "shelf", "notifications", "calendar", "pomodoro", "live", "stats", "control", "phone", "clock"]   # page order; a module that is disabled in its own section is skipped
 
 [media]
 enabled = true                 # follows whatever Windows considers the current media session
@@ -1050,6 +1096,15 @@ net_bits = false               # network speeds in Mbps instead of MB/s
 [control]
 enabled = true                 # volume, brightness, Wi-Fi, Bluetooth, a snip button and Focus; see docs/CONTROL.md
 interval_secs = 1.0            # between readings while the page is on screen; nothing is read while it is not
+
+[phone]
+enabled = true                 # the iPhone page (it explains how to switch the link on)
+listen = false                 # the link itself: a small server on your own network that Shortcuts on the phone can send to. Read docs/IPHONE_SHORTCUTS.md first
+port = 8765                    # 0 = pick a free port (the page shows which)
+same_network_only = true       # only phones on the same network as this PC (not any private address)
+max_file_mib = 100             # largest file accepted
+keep_days = 14                 # received files older than this are deleted
+peek_secs = 4.0
 
 [clock]
 enabled = true

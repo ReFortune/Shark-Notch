@@ -50,7 +50,7 @@ Useful command-line switches:
 The platform-independent core builds and tests anywhere:
 
 ```bash
-cargo test -p notch-core                 # 150+ tests: springs, shell, hover, config, bus, module host...
+cargo test -p notch-core                 # 500+ tests: springs, shell, hover, config, bus, module host, every module, the phone protocol...
 cargo run -p notch-preview -- shell out/shell.png     # render the shell's choreography to a PNG
 cargo run -p notch-preview -- modules out/modules.png # ...or the real module host (chips, pages, peek)
 cargo check --target x86_64-pc-windows-msvc -p shark-notch   # type-check the Windows app
@@ -97,7 +97,7 @@ locked, display-off or a fullscreen app is foreground.
 | 8 | Live activities (microphone/camera chip, quick timers, browser downloads with *Show in folder*) | implemented — the privacy chip and real browsers need your machine; copy progress is **not** feasible, see [`docs/LIVE.md`](docs/LIVE.md) |
 | 9 | System stats (CPU, memory, GPU, network, battery; read only while the page is open) | implemented — GPU counters and battery need your hardware, see [`docs/STATS.md`](docs/STATS.md) |
 | 10 | Command centre (volume, brightness, Wi-Fi, Bluetooth, Focus state, snip) | implemented — every control needs your hardware to be proven; Focus can only be read, see [`docs/CONTROL.md`](docs/CONTROL.md) |
-| 11 | iPhone listener | planned |
+| 11 | iPhone link (a small server on your own network that iOS Shortcuts send to: clipboard text and links, files, battery, Focus) | implemented — **off by default**, plain HTTP, a real iPhone was not available to the build; read [`docs/IPHONE_SHORTCUTS.md`](docs/IPHONE_SHORTCUTS.md) before switching it on |
 
 ## Attribution and licence
 

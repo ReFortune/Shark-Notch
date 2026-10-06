@@ -16,7 +16,7 @@ use notch_core::color::Color;
 use notch_core::compose::{self, Metrics};
 use notch_core::config::{Config, FullscreenScope, Loaded, ReduceMotion, Style};
 use notch_core::draw::{CursorKind, DrawList, HitId};
-use notch_core::events::{EventKind, Kind, Source};
+use notch_core::events::{EventKind, Inbound, Kind, Source};
 use notch_core::frame::{self, FrameRecorder};
 use notch_core::fullscreen::IRect;
 use notch_core::geom::{Rect, Size, Vec2};
@@ -24,7 +24,7 @@ use notch_core::hover::{Cadence, HoverAction, HoverFsm, HoverParams};
 use notch_core::image::ImageCache;
 use notch_core::input::Input;
 use notch_core::module::{
-    Audio, Command, ControlCmd, Env, ModuleHost, ModuleId, ShelfCmd, ShellRequest,
+    Audio, Command, ControlCmd, Env, ModuleHost, ModuleId, PhoneCmd, ShelfCmd, ShellRequest,
 };
 use notch_core::modules;
 use notch_core::raster;
@@ -56,6 +56,7 @@ use crate::gfx::pill::PillWindow;
 use crate::gfx::stack::GpuStack;
 use crate::gfx::stage::{Stage, is_device_lost};
 use crate::services::Services;
+use crate::services::clipboard::put_excluded_text;
 use crate::win::autostart;
 use crate::win::cfgwatch::ConfigWatch;
 use crate::win::clock;
@@ -140,6 +141,8 @@ pub struct App {
     pub(crate) last_files: Option<Vec<notch_core::events::FileEntry>>,
     /// The most recent `NotificationAccess` from the notifications service (self-test reads it).
     pub(crate) last_notif_access: Option<notch_core::events::NotificationAccess>,
+    /// The most recent state of the iPhone link (self-test reads it).
+    pub(crate) last_phone_link: Option<Arc<notch_core::events::PhoneLink>>,
     /// The module that has the keyboard (a text field is being edited), the window that had the focus
     /// before, and a pending high surrogate of a typed character (see `app/kbd.rs`).
     pub(crate) kbd_owner: Option<ModuleId>,
@@ -380,6 +383,7 @@ impl App {
             last_clip: None,
             last_files: None,
             last_notif_access: None,
+            last_phone_link: None,
             kbd_owner: None,
             kbd_prev: None,
             high_surrogate: 0,
@@ -1262,6 +1266,45 @@ impl App {
             Command::Control(_) => {
                 self.services.command(&c);
             }
+            Command::Phone(PhoneCmd::CopyToken) => self.copy_phone_token(),
+            Command::Phone(_) => {
+                self.services.command(&c);
+            }
+        }
+    }
+
+    /// Put the iPhone link's pairing token on the clipboard, flagged so that the clipboard history
+    /// and Windows' own history and cloud sync ignore it. It happens on a short-lived thread:
+    /// another program may be holding the clipboard, and the UI thread never waits for that.
+    fn copy_phone_token(&self) {
+        let Some(token) = self.services.phone_token() else {
+            return;
+        };
+        let owner = self.ctrl.0 as isize;
+        let _ = std::thread::Builder::new()
+            .name("phone-copy".into())
+            .stack_size(128 * 1024)
+            .spawn(move || {
+                if !put_excluded_text(HWND(owner as *mut _), &token) {
+                    warn!("could not put the iPhone pairing token on the clipboard");
+                }
+            });
+    }
+
+    /// Hand what the phone sent to the service that keeps it: text to the clipboard history, a
+    /// file (already saved in the inbox folder) to the shelf.
+    fn route_inbound(&self, what: &Inbound) {
+        match what {
+            Inbound::Text(text) => {
+                if let Some(c) = self.services.clipboard() {
+                    c.add_text(Source::Phone, text.to_string());
+                }
+            }
+            Inbound::File(path) => {
+                if let Some(s) = self.services.shelf() {
+                    s.add_received(PathBuf::from(&**path));
+                }
+            }
         }
     }
 
@@ -1278,6 +1321,8 @@ impl App {
                 EventKind::ClipboardItem(it) => self.last_clip = Some(it.clone()),
                 EventKind::FileDropped(f) => self.last_files = Some(f.clone()),
                 EventKind::NotificationAccess(a) => self.last_notif_access = Some(*a),
+                EventKind::PhoneLink(l) => self.last_phone_link = Some(l.clone()),
+                EventKind::Inbound(i) => self.route_inbound(i),
                 _ => {}
             }
         }

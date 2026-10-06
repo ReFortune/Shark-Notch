@@ -200,6 +200,7 @@ fn fake_art() -> tiny_skia::Pixmap {
 fn modules_sheet(out: &str, theme: Theme) {
     let mut cfg = Config::default();
     cfg.calendar.feeds = vec!["https://example.com/team.ics".into()];
+    cfg.phone.listen = true;
     let mut host = ModuleHost::new(modules::registry(), std::sync::Arc::new(cfg), theme);
     // A fixed moment so the output is reproducible: Tuesday 6 October 2026, 14:05:09.
     host.set_context(
@@ -505,6 +506,37 @@ fn modules_sheet(out: &str, theme: Theme) {
         )
     };
     host.dispatch((0..60).map(reading).collect());
+    // The iPhone link: listening on the home network, the phone's battery and Focus, what it sent.
+    host.dispatch(vec![
+        Event::new(
+            Source::Local,
+            EventKind::PhoneLink(std::sync::Arc::new(notch_core::events::PhoneLink {
+                addrs: vec!["192.168.1.20:8765".into(), "172.20.80.1:8765".into()],
+                port: 8765,
+                error: None,
+                last: Some((
+                    notch_core::civil::unix_from_civil(2026, 10, 6, 14, 4, 40),
+                    "clipboard".into(),
+                )),
+                accepted: 14,
+                refused: 2,
+            })),
+        ),
+        Event::new(
+            Source::Phone,
+            EventKind::Battery(notch_core::events::BatteryInfo {
+                percent: 73,
+                charging: true,
+            }),
+        ),
+        Event::new(
+            Source::Phone,
+            EventKind::FocusChanged(notch_core::events::FocusInfo {
+                name: "Work".into(),
+                active: true,
+            }),
+        ),
+    ]);
     // Live activities: a call on the microphone and camera, two downloads, two quick timers.
     let timers = format!(
         r#"{{"items":[{{"id":1,"label":"10 min","end":{},"total":600}},
