@@ -23,7 +23,8 @@ use windows::Win32::System::Ole::{
 use windows::Win32::System::SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
-    DragQueryFileW, HDROP, ILFree, SHCreateDataObject, SHParseDisplayName,
+    BHID_DataObject, DragQueryFileW, HDROP, ILFree, SHCreateShellItemArrayFromIDLists,
+    SHParseDisplayName,
 };
 use windows::core::{BOOL, HRESULT, PCWSTR, Ref, Result, implement};
 
@@ -224,7 +225,8 @@ impl IDropSource_Impl for ShelfDragSource_Impl {
 }
 
 /// A shell data object for `paths` (so the target sees a normal file drag: `CF_HDROP`, shell ID
-/// lists, drag image). `None` if no path could be resolved.
+/// lists, drag image). Built from an `IShellItemArray`, which — unlike `SHCreateDataObject` with a
+/// parent folder — accepts files from different folders. `None` if no path could be resolved.
 pub fn data_object_for(paths: &[String]) -> Option<IDataObject> {
     unsafe {
         let mut pidls: Vec<*mut ITEMIDLIST> = Vec::new();
@@ -249,12 +251,19 @@ pub fn data_object_for(paths: &[String]) -> Option<IDataObject> {
         }
         let consts: Vec<*const ITEMIDLIST> =
             pidls.iter().map(|p| *p as *const ITEMIDLIST).collect();
-        let data: Result<IDataObject> =
-            SHCreateDataObject(None, Some(&consts), None::<&IDataObject>);
+        let data: Option<IDataObject> = SHCreateShellItemArrayFromIDLists(&consts)
+            .and_then(|items| {
+                items.BindToHandler::<_, IDataObject>(
+                    None::<&windows::Win32::System::Com::IBindCtx>,
+                    &BHID_DataObject,
+                )
+            })
+            .map_err(|e| crate::warn!("shelf: cannot build a shell data object: {e}"))
+            .ok();
         for p in pidls {
             ILFree(Some(p));
         }
-        data.ok()
+        data
     }
 }
 
@@ -297,13 +306,16 @@ mod tests {
             b.to_string_lossy().into_owned(),
         ])
         .expect("the shell builds a data object");
-        assert!(has_files(&data), "it offers CF_HDROP");
+        let hr = unsafe { data.QueryGetData(&hdrop_format()) };
+        assert!(
+            hr == S_OK,
+            "it offers CF_HDROP (QueryGetData returned {hr:?})"
+        );
         let mut got = paths_in(&data);
         got.sort();
         let mut want = vec![a.clone(), b.clone()];
         want.sort();
         assert_eq!(got, want);
-        assert!(data_object_for(&["Z:\\definitely\\not\\here\\nope.txt".into()]).is_none() || true);
         let _ = std::fs::remove_dir_all(a.parent().unwrap());
         unsafe { OleUninitialize() };
     }
