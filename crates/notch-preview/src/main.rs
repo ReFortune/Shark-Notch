@@ -19,7 +19,8 @@ use notch_core::civil::LocalTime;
 use notch_core::compose::{self, Content, Metrics};
 use notch_core::config::Config;
 use notch_core::demo;
-use notch_core::draw::{Canvas, DrawList};
+use notch_core::draw::{Canvas, DrawList, ImageId};
+use notch_core::events::{Event, EventKind, MediaSnapshot, Source};
 use notch_core::geom::{Rect, Vec2};
 use notch_core::module::{Env, ModuleHost};
 use notch_core::modules;
@@ -109,7 +110,7 @@ fn shell_sheet(out: &str, theme: Theme) {
         }
     }
 
-    render_cells(out, &theme, &cells, &pages, &mut Demo);
+    render_cells(out, &theme, &cells, &pages, &Images::default(), &mut Demo);
 }
 
 /// Render a contact sheet of frames, drawn by `content` (the demo pages or the real module host).
@@ -118,10 +119,10 @@ fn render_cells(
     theme: &Theme,
     cells: &[(String, notch_core::shell::ShellFrame)],
     pages: &[notch_core::geom::Size],
+    images: &Images,
     content: &mut dyn Content,
 ) {
     let fonts = Fonts::load();
-    let images = Images::default();
     let cols = 4;
     let rows = cells.len().div_ceil(cols);
     let mut sheet = tiny_skia::Pixmap::new(
@@ -131,7 +132,7 @@ fn render_cells(
     .unwrap();
     sheet.fill(tiny_skia::Color::from_rgba8(30, 30, 34, 255));
     for (i, (label, frame)) in cells.iter().enumerate() {
-        let mut cell = Renderer::new(CELL_W, CELL_H, SCALE, &fonts, &images);
+        let mut cell = Renderer::new(CELL_W, CELL_H, SCALE, &fonts, images);
         render::fake_desktop(&mut cell.pix, SCALE);
         let mut list = DrawList::new();
         compose::compose(
@@ -166,7 +167,33 @@ fn render_cells(
     save(&sheet, out);
 }
 
-/// The real [`ModuleHost`] with the default config: collapsed chips, each page expanding, the peek.
+/// A synthetic album cover: diagonal gradient with a ring, enough to judge cropping and corners.
+fn fake_art() -> tiny_skia::Pixmap {
+    let n = 160u32;
+    let mut px = tiny_skia::Pixmap::new(n, n).unwrap();
+    for y in 0..n {
+        for x in 0..n {
+            let t = (x + y) as f32 / (2.0 * n as f32);
+            let (cx, cy) = (x as f32 - 80.0, y as f32 - 80.0);
+            let ring = ((cx * cx + cy * cy).sqrt() - 44.0).abs() < 5.0;
+            let (r, g, b) = if ring {
+                (255, 244, 230)
+            } else {
+                (
+                    (250.0 - 120.0 * t) as u8,
+                    (110.0 + 20.0 * t) as u8,
+                    (70.0 + 150.0 * t) as u8,
+                )
+            };
+            px.pixels_mut()[(y * n + x) as usize] =
+                tiny_skia::PremultipliedColorU8::from_rgba(r, g, b, 255).unwrap();
+        }
+    }
+    px
+}
+
+/// The real [`ModuleHost`] with the default config and a made-up media session: chips, every page
+/// expanding, the peek banners.
 fn modules_sheet(out: &str, theme: Theme) {
     let mut host = ModuleHost::new(
         modules::registry(),
@@ -179,8 +206,33 @@ fn modules_sheet(out: &str, theme: Theme) {
         Env {
             local: LocalTime::new(2026, 10, 6, 14, 5, 9),
             system_24h: true,
+            audio: notch_core::module::Audio::Level(0.7),
         },
     );
+    let mut images = Images::default();
+    images.insert(ImageId(1), fake_art());
+    let song = |title: &str, playing: bool| {
+        Event::new(
+            Source::Local,
+            EventKind::MediaChanged(std::sync::Arc::new(MediaSnapshot {
+                app: "Spotify".into(),
+                title: title.into(),
+                artist: "M83".into(),
+                album: "Hurry Up, We're Dreaming".into(),
+                playing,
+                position_ms: 83_000,
+                duration_ms: 243_000,
+                art: 1,
+                accent: Some([250, 110, 70]),
+                can_play_pause: true,
+                can_next: true,
+                can_prev: true,
+                can_seek: true,
+            })),
+        )
+    };
+    host.dispatch(vec![song("Midnight City", true)]);
+    let _ = host.take_out();
     let pages = host.pages();
     let mut shell = Shell::new(ShellConfig::default());
     shell.set_pages(pages.clone());
@@ -195,7 +247,7 @@ fn modules_sheet(out: &str, theme: Theme) {
         }
     };
     run(&mut shell, &mut t, 1.0);
-    let mut cells = vec![("idle with chips".to_string(), shell.frame())];
+    let mut cells = vec![("idle".to_string(), shell.frame())];
     for page in 0..pages.len() {
         shell.set_page(t, page);
         shell.expand(t, Trigger::Hotkey);
@@ -215,7 +267,7 @@ fn modules_sheet(out: &str, theme: Theme) {
             run(&mut shell, &mut t, 0.6);
         }
     }
-    render_cells(out, &theme, &cells, &pages, &mut host);
+    render_cells(out, &theme, &cells, &pages, &images, &mut host);
 }
 
 fn shapes_sheet(out: &str) {

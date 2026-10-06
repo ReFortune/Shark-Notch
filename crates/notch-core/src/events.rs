@@ -61,17 +61,44 @@ pub struct FocusInfo {
     pub active: bool,
 }
 
+/// What the system's media session (Spotify, a browser tab, the Media Player...) is doing.
+///
+/// "No session" is the default value (empty title and app). Position is the position *at the moment
+/// the snapshot was taken*; the media module extrapolates it while playing, so nothing needs to poll.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct MediaSnapshot {
+    /// Friendly name of the source app ("Spotify", "Chrome").
     pub app: Arc<str>,
     pub title: Arc<str>,
     pub artist: Arc<str>,
     pub album: Arc<str>,
     pub playing: bool,
     pub position_ms: u64,
+    /// 0 = unknown / live stream.
     pub duration_ms: u64,
-    /// Key into the platform's image store for the album art (0 = none).
+    /// Key into the platform's image cache for the album art (0 = none).
     pub art: u64,
+    /// Dominant colour of the art as `[r, g, b]`, if there is art.
+    pub accent: Option<[u8; 3]>,
+    pub can_play_pause: bool,
+    pub can_next: bool,
+    pub can_prev: bool,
+    pub can_seek: bool,
+}
+
+impl MediaSnapshot {
+    /// Whether there is a media session worth showing.
+    pub fn is_active(&self) -> bool {
+        !self.title.is_empty() || !self.app.is_empty()
+    }
+
+    /// Same track (ignoring position, art and play state)?
+    pub fn same_track(&self, o: &MediaSnapshot) -> bool {
+        self.app == o.app
+            && self.title == o.title
+            && self.artist == o.artist
+            && self.album == o.album
+    }
 }
 
 /// What happened. Keep variants small; add payload types above rather than fields here.

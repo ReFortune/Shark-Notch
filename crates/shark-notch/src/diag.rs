@@ -11,7 +11,13 @@
 
 use std::fmt::Write as _;
 
-use notch_core::shell::Trigger;
+use std::sync::Arc;
+
+use notch_core::compose;
+use notch_core::events::{EventKind, MediaSnapshot, Source};
+use notch_core::image::ImageData;
+use notch_core::modules::media::Layout as MediaLayout;
+use notch_core::shell::{Presence, Trigger};
 use windows::Win32::Foundation::COLORREF;
 use windows::Win32::Graphics::Gdi::{GetDC, GetPixel, ReleaseDC};
 
@@ -33,6 +39,8 @@ pub struct SelfTest {
     lines: Vec<String>,
     failures: Vec<String>,
     idle_begin: Option<Mark>,
+    /// Id of the synthetic album art in the image cache.
+    art_id: u64,
     /// Cycles per second of a busy core (calibrated), for tick-free CPU percentages.
     cycles_hz: f64,
     warm_idle: Option<(f64, f64)>,     // (cpu %, private MiB)
@@ -55,6 +63,13 @@ enum Act {
     Warm,
     ExpandHover,
     Peek,
+    MediaFeed,
+    MediaExpand,
+    ProbeMedia,
+    MediaNext,
+    CheckPeek,
+    MediaGone,
+    CheckGone,
     Report,
 }
 
@@ -75,8 +90,37 @@ const SCRIPT: &[(f64, Act)] = &[
     (19.2, Act::ExpandHover),
     (20.8, Act::Collapse),
     (21.8, Act::Peek),
-    (24.5, Act::Report),
+    (24.5, Act::MediaFeed),
+    (24.9, Act::MediaExpand),
+    (26.4, Act::ProbeMedia),
+    (26.6, Act::Collapse),
+    (28.0, Act::MediaNext),
+    (28.7, Act::CheckPeek),
+    (30.5, Act::MediaGone),
+    (31.0, Act::CheckGone),
+    (31.5, Act::Report),
 ];
+
+/// The colour of the synthetic album art (r, g, b): distinctive and not a theme colour.
+const ART_RGB: (u8, u8, u8) = (210, 60, 120);
+
+fn demo_snapshot(title: &str, art: u64) -> MediaSnapshot {
+    MediaSnapshot {
+        app: "Selftest".into(),
+        title: title.into(),
+        artist: "Shark Notch".into(),
+        album: "Diagnostics".into(),
+        playing: true,
+        position_ms: 42_000,
+        duration_ms: 180_000,
+        art,
+        accent: Some([ART_RGB.0, ART_RGB.1, ART_RGB.2]),
+        can_play_pause: true,
+        can_next: true,
+        can_prev: true,
+        can_seek: true,
+    }
+}
 
 fn mark() -> Mark {
     Mark {
@@ -126,6 +170,7 @@ pub fn begin(a: &mut App) {
         lines: Vec::new(),
         failures: Vec::new(),
         idle_begin: None,
+        art_id: 0,
         cycles_hz: sys::cycles_per_sec(),
         warm_idle: None,
         released_idle: None,
@@ -269,6 +314,114 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
             {
                 a.shell.peek(now, owner, size, 1.5);
                 a.kick("peek");
+            }
+        }
+        Act::MediaFeed => {
+            // A synthetic session goes through the real pipeline: bus -> module -> display list ->
+            // image cache -> Direct2D bitmap -> composition.
+            let (r, g, b) = ART_RGB;
+            let px = [b, g, r, 255].repeat(64 * 64);
+            let id = ImageData::new(64, 64, px)
+                .and_then(|d| a.images.put(d))
+                .map_or(0, |i| i.0);
+            if id == 0 {
+                st.fail("the image cache refused the demo art".into());
+            }
+            st.art_id = id;
+            a.bus_tx.send(
+                Source::Local,
+                EventKind::MediaChanged(Arc::new(demo_snapshot("Selftest Track A", id))),
+            );
+        }
+        Act::MediaExpand => {
+            let ring = a.host.page_ids();
+            st.say(format!("pages after the media event: {ring:?}"));
+            match a.host.page_of("media") {
+                Some(p) => {
+                    a.shell.set_page(now, p);
+                    a.expand(Trigger::Hotkey);
+                }
+                None => st
+                    .fail("the media page did not join the ring after a MediaChanged event".into()),
+            }
+        }
+        Act::ProbeMedia => {
+            if let (Some(p), true) = (
+                a.host.page_of("media"),
+                a.shell.presence() == Presence::Expanded,
+            ) {
+                let size = a.pages[p];
+                let area = compose::content_rect(0.0, size, a.layout.win_dip.w, &a.metrics);
+                let c = MediaLayout::new(area).art.center();
+                let (wx, wy, _, _) = a.layout.win_px;
+                let (x, y) = (
+                    wx + (c.x * ppd).round() as i32,
+                    wy + (c.y * ppd).round() as i32,
+                );
+                match probe_pixel(x, y) {
+                    Some((r, g, b)) => {
+                        let (er, eg, eb) = ART_RGB;
+                        let close = |v: u8, e: u8| v.abs_diff(e) <= 6;
+                        let ok = close(r, er) && close(g, eg) && close(b, eb);
+                        st.say(format!(
+                            "probe album art at ({x},{y}): rgb({r},{g},{b}) expected ~({er},{eg},{eb}) -> {}",
+                            if ok { "matches: the image reached the screen" } else { "does NOT match (art not drawn, or desktop probing unavailable)" }
+                        ));
+                    }
+                    None => st.say("probe album art: GetPixel unavailable on this session".into()),
+                }
+                st.say(format!(
+                    "image cache: {} image(s), {} KiB; GPU bitmaps uploaded: {}",
+                    a.images.len(),
+                    a.images.bytes() / 1024,
+                    a.stage.as_ref().map_or(0, |s| s.images.uploaded())
+                ));
+            } else {
+                st.fail("the media page was not expanded for the art probe".into());
+            }
+        }
+        Act::MediaNext => {
+            // A different track while collapsed must announce itself with a peek.
+            a.bus_tx.send(
+                Source::Local,
+                EventKind::MediaChanged(Arc::new(demo_snapshot("Selftest Track B", st.art_id))),
+            );
+        }
+        Act::CheckPeek => {
+            if a.shell.presence() == Presence::Peek {
+                st.say("a track change while collapsed showed the peek banner".into());
+            } else {
+                st.fail(format!(
+                    "a track change did not peek (presence {:?})",
+                    a.shell.presence()
+                ));
+            }
+        }
+        Act::MediaGone => {
+            a.bus_tx.send(
+                Source::Local,
+                EventKind::MediaChanged(Arc::new(MediaSnapshot::default())),
+            );
+            a.images.remove(notch_core::draw::ImageId(st.art_id));
+        }
+        Act::CheckGone => {
+            let ring = a.host.page_ids();
+            if ring.contains(&"media") {
+                st.fail(format!(
+                    "the media page stayed after the session ended: {ring:?}"
+                ));
+            } else {
+                st.say(format!(
+                    "session ended: page left the ring {ring:?}; cache holds {} image(s)",
+                    a.images.len()
+                ));
+            }
+            st.say(format!(
+                "audio meter thread running: {} (it must only run while the visualizer is on screen)",
+                a.services.audio.running()
+            ));
+            if a.services.audio.running() {
+                st.fail("the audio meter thread is running while nothing is animating".into());
             }
         }
         Act::Report => finish(a, st),

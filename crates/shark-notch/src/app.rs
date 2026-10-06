@@ -19,8 +19,9 @@ use notch_core::frame::{self, FrameRecorder};
 use notch_core::fullscreen::IRect;
 use notch_core::geom::{Rect, Size, Vec2};
 use notch_core::hover::{Cadence, HoverAction, HoverFsm, HoverParams};
+use notch_core::image::ImageCache;
 use notch_core::input::Input;
-use notch_core::module::{Command, Env, ModuleHost, ShellRequest};
+use notch_core::module::{Audio, Command, Env, ModuleHost, ShellRequest};
 use notch_core::modules;
 use notch_core::raster;
 use notch_core::sched::{Scheduler, TimerId};
@@ -48,6 +49,7 @@ use windows::core::PCWSTR;
 use crate::gfx::pill::PillWindow;
 use crate::gfx::stack::GpuStack;
 use crate::gfx::stage::{Stage, is_device_lost};
+use crate::services::Services;
 use crate::win::autostart;
 use crate::win::cfgwatch::ConfigWatch;
 use crate::win::clock;
@@ -74,6 +76,9 @@ pub const T_CFG_RELOAD: TimerId = TimerId(4);
 pub const T_MODULES: TimerId = TimerId(5);
 pub const T_REDRAW: TimerId = TimerId(6);
 pub const T_SCRIPT: TimerId = TimerId(9);
+
+/// A continuous animation (the visualizer) reports its frame times every this many frames.
+const LONG_BURST_FRAMES: usize = 1200;
 
 /// `WM_MOUSELEAVE` (declared in commctrl.h, outside the feature set we link).
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -114,6 +119,10 @@ pub struct App {
     pub(crate) host: ModuleHost,
     bus: Bus,
     pub(crate) bus_tx: BusSender,
+    /// Decoded album art / thumbnails, shared with the producers and the renderer.
+    pub(crate) images: Arc<ImageCache>,
+    /// OS-backed producers (media session, audio meter, ...), alive only while their module is.
+    pub(crate) services: Services,
     /// The last view reported to the host: (expanded, ring page).
     view: (bool, usize),
     system_24h: bool,
@@ -145,6 +154,7 @@ pub struct App {
     pub(crate) present_errors: u64,
     pub(crate) last_warm_ms: f64,
     pub(crate) last_prewarm_ms: f64,
+    slow_frames_logged: u32,
     frame_block_until: f64,
 }
 
@@ -196,6 +206,16 @@ fn shell_config(cfg: &Config) -> ShellConfig {
         stagger_out: an.stagger_out_ms as f64 / 1000.0,
         stagger_switch: 0.045,
         reduce_motion: reduce_motion(cfg),
+    }
+}
+
+/// Content metrics: how far content must stay clear of the shape's edges and ears.
+fn make_metrics(cfg: &Config, theme: &Theme) -> Metrics {
+    let ears = cfg.appearance.ears && cfg.appearance.style != Style::Island;
+    Metrics {
+        ear_inset: if ears { cfg.appearance.ear_size } else { 0.0 },
+        outline: theme.dark,
+        ..Metrics::default()
     }
 }
 
@@ -294,6 +314,8 @@ impl App {
         let pages = clamp_pages(&cfg, host.pages());
         let layout = make_layout(&cfg).ok_or("no monitor available")?;
         let (bus, bus_tx) = Bus::new(Arc::new(WinWaker));
+        let images = Arc::new(ImageCache::default());
+        let services = Services::new(bus_tx.clone(), images.clone());
         let mut shell = Shell::new(shell_config(&cfg));
         shell.set_pages(pages.clone());
         shell.gesture_mut().reverse = cfg.animation.reverse_scroll;
@@ -315,6 +337,8 @@ impl App {
             host,
             bus,
             bus_tx,
+            images,
+            services,
             view: (false, 0),
             system_24h: sys::system_24h(),
             metrics: Metrics::default(),
@@ -347,10 +371,11 @@ impl App {
             present_errors: 0,
             last_warm_ms: 0.0,
             last_prewarm_ms: 0.0,
+            slow_frames_logged: 0,
             frame_block_until: 0.0,
             cfg,
         };
-        app.metrics.outline = app.theme.dark;
+        app.metrics = make_metrics(&app.cfg, &app.theme);
         Ok(app)
     }
 
@@ -395,6 +420,8 @@ impl App {
         {
             warn!("autostart: {e}");
         }
+
+        self.services.sync(&self.cfg);
 
         // Pre-warm the first render so the very first hover animates immediately, then let the idle
         // timer release the GPU again if it is not used.
@@ -478,6 +505,7 @@ impl App {
             self.layout.win_px,
             self.layout.px_per_dip,
             exclude,
+            self.images.clone(),
         ) {
             Ok(s) => s,
             Err(e) => {
@@ -658,7 +686,7 @@ impl App {
         self.sync_view();
         let frame = self.shell.frame();
         self.sync_window(&frame);
-        let env = self.env();
+        let env = self.frame_env();
         self.host.set_context(t_start, env);
         compose::compose(
             &frame,
@@ -669,9 +697,14 @@ impl App {
             &mut self.list,
             &mut self.host,
         );
+        let t_composed = clock::now();
         let result = self.stage.as_mut().map(|s| s.draw(&self.list));
+        let mut times = None;
         match result {
-            Some(Ok(())) => self.frames_presented += 1,
+            Some(Ok(t)) => {
+                self.frames_presented += 1;
+                times = Some(t);
+            }
             Some(Err(e)) if is_device_lost(&e) => {
                 self.on_device_lost();
                 return;
@@ -684,12 +717,43 @@ impl App {
             None => {}
         }
         if self.burst {
-            self.recorder
-                .frame(t_start, ((clock::now() - t_start) * 1000.0) as f32);
+            let total_ms = ((clock::now() - t_start) * 1000.0) as f32;
+            self.recorder.frame(t_start, total_ms);
+            // A frame that cost more than a whole refresh period is what makes a hitch: say where the
+            // time went (the first few per run; a flood would be noise).
+            if let Some(t) = times
+                && f64::from(total_ms) > self.period * 1000.0
+                && self.slow_frames_logged < 12
+            {
+                self.slow_frames_logged += 1;
+                warn!(
+                    "slow frame {total_ms:.1} ms: update+compose {:.1}, render {:.1}, present {:.1}",
+                    ((t_composed - t_start) * 1000.0),
+                    t.render_ms,
+                    t.present_ms
+                );
+            }
         }
         if !self.animating() {
             self.end_burst();
+        } else if self.recorder.len() >= LONG_BURST_FRAMES && !self.shell.animating() {
+            // A long continuous run (the visualizer): report it in chunks so a hitch is not averaged
+            // away inside one huge burst.
+            self.rotate_burst(t_start);
         }
+    }
+
+    fn rotate_burst(&mut self, now: f64) {
+        if let Some(rep) = self.recorder.finish()
+            && (self.cfg.performance.frame_report || rep.has_hitch())
+        {
+            if rep.has_hitch() {
+                warn!("{}", rep.format())
+            } else {
+                info!("{}", rep.format())
+            }
+        }
+        self.recorder.begin("continuous", now, self.period);
     }
 
     fn end_burst(&mut self) {
@@ -705,6 +769,9 @@ impl App {
                     info!("{}", rep.format())
                 }
             }
+        }
+        if !self.host.wants_frames() {
+            self.services.audio.stop();
         }
         if let Some(stage) = self.stage.as_mut() {
             stage.renderer.trim();
@@ -864,8 +931,10 @@ impl App {
         self.list.hit_test(p).map(|h| h.id)
     }
 
+    /// A press and release on the same region: tell the module that owns the page.
     fn on_click(&mut self, id: HitId) {
         debug!("click on region {}", id.0);
+        self.module_input(Input::Click(self.cursor));
     }
 
     // ----- the module host ----------------------------------------------------------------------
@@ -874,7 +943,19 @@ impl App {
         Env {
             local: sys::local_time(),
             system_24h: self.system_24h,
+            audio: Audio::Idle,
         }
+    }
+
+    /// The environment for a frame about to be drawn: includes the output level, sampled **only**
+    /// while a visible module asks for continuous frames (the meter thread runs only then too).
+    fn frame_env(&mut self) -> Env {
+        let mut env = self.env();
+        if self.host.wants_frames() {
+            self.services.audio.start();
+            env.audio = self.services.audio.sample();
+        }
+        env
     }
 
     fn host_ctx(&mut self, now: f64) {
@@ -975,6 +1056,9 @@ impl App {
 
     fn exec(&mut self, c: Command) {
         match c {
+            Command::Media(_) => {
+                self.services.command(&c);
+            }
             Command::OpenUrl(url) => {
                 let u = url.trim();
                 if u.starts_with("https://") || u.starts_with("http://") {
@@ -1067,6 +1151,7 @@ impl App {
         self.bus_tx
             .send(Source::Local, EventKind::Suspended(was_suspended_event));
         self.host_ctx(now);
+        self.services.suspend(was_suspended_event);
         if was_suspended_event {
             self.host.suspend();
         } else {
@@ -1379,7 +1464,7 @@ impl App {
         self.system_dark = sys::system_dark();
         self.system_accent = sys::system_accent();
         self.theme = resolve_theme(&self.cfg, self.system_dark, self.system_accent);
-        self.metrics.outline = self.theme.dark;
+        self.metrics = make_metrics(&self.cfg, &self.theme);
         self.host.set_theme(self.theme);
         self.bus_tx.send(Source::Local, EventKind::ThemeChanged);
         if self.stage.is_some() {
@@ -1455,10 +1540,11 @@ impl App {
             }
         }
         self.theme = resolve_theme(&new, self.system_dark, self.system_accent);
-        self.metrics.outline = self.theme.dark;
+        self.metrics = make_metrics(&new, &self.theme);
         self.host.set_theme(self.theme);
         self.host_ctx(clock::now());
         self.host.apply_config(Arc::new(new.clone()));
+        self.services.sync(&new);
         self.bus_tx.send(Source::Local, EventKind::ConfigChanged);
         self.refresh_pages();
         self.hover.set_params(hover_params(&new));

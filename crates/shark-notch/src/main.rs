@@ -10,6 +10,8 @@ mod diag;
 #[cfg(windows)]
 mod gfx;
 #[cfg(windows)]
+mod services;
+#[cfg(windows)]
 mod win;
 
 #[cfg(windows)]

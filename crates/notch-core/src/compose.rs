@@ -23,6 +23,9 @@ pub trait Content {
 #[derive(Clone, Copy, Debug)]
 pub struct Metrics {
     pub pad_x: f32,
+    /// Extra horizontal inset for the concave "ears": the visible body of a notch is `2 * ear`
+    /// narrower than its shape, so content must clear them (0 for the floating island style).
+    pub ear_inset: f32,
     pub pad_top: f32,
     pub pad_bottom: f32,
     /// Draw a faint hairline around the notch.
@@ -33,6 +36,7 @@ impl Default for Metrics {
     fn default() -> Self {
         Self {
             pad_x: 18.0,
+            ear_inset: 12.0,
             pad_top: 14.0,
             pad_bottom: 26.0,
             outline: true,
@@ -44,10 +48,11 @@ impl Default for Metrics {
 /// hanging from the top of the shape.
 pub fn content_rect(frame_y: f32, nominal: Size, window_w: f32, m: &Metrics) -> Rect {
     let x = (window_w - nominal.w) * 0.5;
+    let pad_x = m.pad_x + m.ear_inset;
     Rect::new(
-        x + m.pad_x,
+        x + pad_x,
         frame_y + m.pad_top,
-        (nominal.w - 2.0 * m.pad_x).max(0.0),
+        (nominal.w - 2.0 * pad_x).max(0.0),
         (nominal.h - m.pad_top - m.pad_bottom).max(0.0),
     )
 }

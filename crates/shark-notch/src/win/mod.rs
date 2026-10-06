@@ -6,6 +6,7 @@ pub mod cfgwatch;
 pub mod clock;
 pub mod fullscreen;
 pub mod hotkeys;
+pub mod imaging;
 pub mod inbox;
 pub mod layout;
 pub mod paths;

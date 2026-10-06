@@ -36,10 +36,23 @@ pub enum Visibility {
     Expanded,
 }
 
+/// Playback control sent to the system's current media session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MediaCmd {
+    PlayPause,
+    Next,
+    Previous,
+    /// Seek to an absolute position in milliseconds.
+    SeekTo(u64),
+    /// Re-read the session now (position drift, a thumbnail that arrived late).
+    Refresh,
+}
+
 /// Things a module asks the platform to do. Modules never call the OS themselves.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     OpenUrl(Arc<str>),
+    Media(MediaCmd),
 }
 
 /// Requests that concern the shell itself.
@@ -51,12 +64,26 @@ pub enum ShellRequest {
     Expand { module: ModuleId },
 }
 
+/// Loudness of what the PC is playing, as sampled by the platform.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum Audio {
+    /// Not sampled this frame: no module asked for continuous frames, so no device is open.
+    #[default]
+    Idle,
+    /// A module asked, but no audio device could be metered.
+    Unavailable,
+    /// Peak level 0..=1 of the default output device.
+    Level(f32),
+}
+
 /// Environment values the platform supplies (the core never reads a clock or a locale itself).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Env {
     pub local: LocalTime,
     /// The user's regional preference for 24-hour time.
     pub system_24h: bool,
+    /// Sampled by the platform **only while a module asks for continuous frames** (`wants_frames`).
+    pub audio: Audio,
 }
 
 impl Default for Env {
@@ -64,6 +91,7 @@ impl Default for Env {
         Env {
             local: LocalTime::default(),
             system_24h: true,
+            audio: Audio::Idle,
         }
     }
 }

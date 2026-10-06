@@ -100,6 +100,15 @@ impl FrameRecorder {
         self.active
     }
 
+    /// Number of frame intervals recorded in the current burst.
+    pub fn len(&self) -> usize {
+        self.intervals.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.intervals.is_empty()
+    }
+
     /// Begin a burst. `period` is the current refresh period in seconds.
     pub fn begin(&mut self, label: &str, now: f64, period: f64) {
         if self.active {

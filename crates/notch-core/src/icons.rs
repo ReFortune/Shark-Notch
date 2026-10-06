@@ -21,6 +21,27 @@ pub enum Icon {
     ChevronUp,
     ChevronDown,
     Clock,
+    /// Beamed music notes (placeholder album art).
+    Note,
+}
+
+impl Icon {
+    /// Every icon, for tests and the preview tool.
+    pub const ALL: [Icon; 13] = [
+        Icon::Play,
+        Icon::Pause,
+        Icon::Next,
+        Icon::Prev,
+        Icon::Close,
+        Icon::Check,
+        Icon::Plus,
+        Icon::ChevronLeft,
+        Icon::ChevronRight,
+        Icon::ChevronUp,
+        Icon::ChevronDown,
+        Icon::Clock,
+        Icon::Note,
+    ];
 }
 
 #[derive(Clone, Debug)]
@@ -176,6 +197,13 @@ pub fn ops(icon: Icon) -> Vec<IconOp> {
                 2.0,
             ),
         ],
+        Icon::Note => vec![
+            Fill(circle_path(7.2, 17.6, 2.9)),
+            Fill(circle_path(17.2, 15.6, 2.9)),
+            Stroke(polyline(&[(10.1, 17.6), (10.1, 6.2)], false), 2.0),
+            Stroke(polyline(&[(20.1, 15.6), (20.1, 4.2)], false), 2.0),
+            Stroke(polyline(&[(10.1, 6.6), (20.1, 4.6)], false), 2.6),
+        ],
     }
 }
 
@@ -183,24 +211,9 @@ pub fn ops(icon: Icon) -> Vec<IconOp> {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 12] = [
-        Icon::Play,
-        Icon::Pause,
-        Icon::Next,
-        Icon::Prev,
-        Icon::Close,
-        Icon::Check,
-        Icon::Plus,
-        Icon::ChevronLeft,
-        Icon::ChevronRight,
-        Icon::ChevronUp,
-        Icon::ChevronDown,
-        Icon::Clock,
-    ];
-
     #[test]
     fn every_icon_fits_the_grid_with_room_for_its_stroke() {
-        for icon in ALL {
+        for icon in Icon::ALL {
             let o = ops(icon);
             assert!(!o.is_empty(), "{icon:?}");
             for op in o {

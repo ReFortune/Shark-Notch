@@ -9,8 +9,10 @@
 //!   loop can wake exactly when DWM is ready for the next frame.
 
 use std::mem::ManuallyDrop;
+use std::sync::Arc;
 
 use notch_core::draw::DrawList;
+use notch_core::image::ImageCache;
 use windows::Win32::Foundation::{COLORREF, HANDLE, HWND, RECT};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT,
@@ -40,6 +42,7 @@ use windows::core::{Error, Interface, Result};
 
 use super::render::{ImageStore, Renderer};
 use super::stack::GpuStack;
+use crate::win::clock;
 use crate::win::window::{self, WndProc};
 
 pub const STAGE_CLASS: &str = "SharkNotch.Stage";
@@ -53,6 +56,15 @@ pub fn is_device_lost(e: &Error) -> bool {
     c == DXGI_ERROR_DEVICE_REMOVED.0
         || c == DXGI_ERROR_DEVICE_RESET.0
         || c == D2DERR_RECREATE_TARGET
+}
+
+/// Where one presented frame spent its CPU time (for the frame-time report).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DrawTimes {
+    /// Executing the display list with Direct2D (`BeginDraw`..`EndDraw`).
+    pub render_ms: f32,
+    /// The `Present` call (can block briefly on vsync / the frame queue).
+    pub present_ms: f32,
 }
 
 pub struct Stage {
@@ -81,6 +93,7 @@ impl Stage {
         rect: (i32, i32, i32, i32),
         px_per_dip: f32,
         exclude_from_capture: bool,
+        images: Arc<ImageCache>,
     ) -> Result<Stage> {
         let (x, y, w, h) = rect;
         window::register_class(STAGE_CLASS, proc)?;
@@ -91,7 +104,7 @@ impl Stage {
             | WS_EX_LAYERED
             | WS_EX_TRANSPARENT;
         let hwnd = window::create_window(ex, STAGE_CLASS, "Shark Notch", WS_POPUP, x, y, w, h)?;
-        match Self::build(gpu, hwnd, w, h, px_per_dip, exclude_from_capture) {
+        match Self::build(gpu, hwnd, w, h, px_per_dip, images) {
             Ok(mut stage) => {
                 stage.exclude_from_capture = exclude_from_capture;
                 stage.set_capture_exclusion(exclude_from_capture);
@@ -112,7 +125,7 @@ impl Stage {
         w: i32,
         h: i32,
         px_per_dip: f32,
-        _exclude: bool,
+        images: Arc<ImageCache>,
     ) -> Result<Stage> {
         unsafe {
             // A layered window is not displayed until its attributes are set.
@@ -154,7 +167,7 @@ impl Stage {
                 hwnd,
                 gpu,
                 renderer,
-                images: ImageStore::default(),
+                images: ImageStore::new(images),
                 swap,
                 waitable,
                 _target: target,
@@ -185,14 +198,20 @@ impl Stage {
         }
     }
 
-    /// Draw `list` into the back buffer and present it (vsync-locked).
-    pub fn draw(&mut self, list: &DrawList) -> Result<()> {
+    /// Draw `list` into the back buffer and present it (vsync-locked). Returns where the time went.
+    pub fn draw(&mut self, list: &DrawList) -> Result<DrawTimes> {
+        let t0 = clock::now();
         self.render(list)?;
+        let t1 = clock::now();
         // The very first frame is presented immediately so the window never shows undefined pixels.
         let sync = if self.presented { 1 } else { 0 };
         unsafe { self.swap.Present(sync, DXGI_PRESENT(0)).ok()? };
         self.presented = true;
-        Ok(())
+        let t2 = clock::now();
+        Ok(DrawTimes {
+            render_ms: ((t1 - t0) * 1000.0) as f32,
+            present_ms: ((t2 - t1) * 1000.0) as f32,
+        })
     }
 
     /// Draw without presenting. Used to warm every cache (text formats and layouts, icon geometry,
@@ -225,7 +244,7 @@ impl Stage {
                 b: 0.0,
                 a: 0.0,
             }));
-            let drawn = self.renderer.draw(&self.gpu, list, &self.images);
+            let drawn = self.renderer.draw(&self.gpu, list, &mut self.images);
             // EndDraw must run even if drawing failed, or the context stays in a draw state.
             let ended = dc.EndDraw(None, None);
             dc.SetTarget(None);

@@ -268,6 +268,29 @@ impl Default for ClockCfg {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+pub struct MediaCfg {
+    pub enabled: bool,
+    /// Briefly show the new track when the song changes while the notch is collapsed.
+    pub peek_on_change: bool,
+    /// How long that peek stays, in seconds.
+    pub peek_secs: f32,
+    /// Level-reactive bars on the page — animated only while music is playing *and* the page is open.
+    pub visualizer: bool,
+}
+
+impl Default for MediaCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            peek_on_change: true,
+            peek_secs: 2.8,
+            visualizer: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Modules {
     /// Page order. Unknown ids are ignored; modules that are disabled are skipped.
     pub order: Vec<String>,
@@ -276,7 +299,7 @@ pub struct Modules {
 impl Default for Modules {
     fn default() -> Self {
         Self {
-            order: vec!["clock".into()],
+            order: vec!["media".into(), "clock".into()],
         }
     }
 }
@@ -292,6 +315,7 @@ pub struct Config {
     pub performance: Performance,
     pub fullscreen: Fullscreen,
     pub modules: Modules,
+    pub media: MediaCfg,
     pub clock: ClockCfg,
 }
 
@@ -451,6 +475,7 @@ impl Config {
             "animation.stagger_out_ms",
             w,
         );
+        clamp_f(&mut self.media.peek_secs, 0.5, 10.0, "media.peek_secs", w);
         clamp_u(
             &mut self.performance.gpu_idle_release_secs,
             0,
@@ -489,6 +514,18 @@ impl Config {
                 key.clear();
             }
         }
+    }
+
+    /// Is module `id` both listed in `modules.order` and enabled in its own section? The module host
+    /// and the platform services (which own the OS-side producers) use the same answer, so a
+    /// disabled module costs nothing: no object, no thread, no subscription.
+    pub fn module_active(&self, id: &str) -> bool {
+        let enabled = match id {
+            "clock" => self.clock.enabled,
+            "media" => self.media.enabled,
+            _ => false,
+        };
+        enabled && self.modules.order.iter().any(|m| m == id)
     }
 
     /// Spring-time parameters etc. that the shell derives from the config.
@@ -577,7 +614,13 @@ show_missed_indicator = true
 peek_over_fullscreen = false
 
 [modules]
-order = ["clock"]              # page order; a module that is disabled in its own section is skipped
+order = ["media", "clock"]     # page order; a module that is disabled in its own section is skipped
+
+[media]
+enabled = true                 # follows whatever Windows considers the current media session
+peek_on_change = true          # briefly show the new track while the notch is collapsed
+peek_secs = 2.8
+visualizer = true              # level bars; frames are only drawn while playing AND the page is open
 
 [clock]
 enabled = true

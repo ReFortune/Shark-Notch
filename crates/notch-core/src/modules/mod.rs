@@ -4,11 +4,18 @@
 use crate::module::Factory;
 
 pub mod clock;
+pub mod media;
 
 /// Every module this build knows about, in no particular order (page order comes from the config).
 pub fn registry() -> Vec<Factory> {
-    vec![Factory {
-        id: "clock",
-        create: clock::create,
-    }]
+    vec![
+        Factory {
+            id: "media",
+            create: media::create,
+        },
+        Factory {
+            id: "clock",
+            create: clock::create,
+        },
+    ]
 }

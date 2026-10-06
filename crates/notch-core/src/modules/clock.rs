@@ -8,6 +8,8 @@ use crate::config::{ClockCfg, Config, HourFormat};
 use crate::draw::{Align, Canvas, TextStyle, Weight};
 use crate::geom::{Rect, Size};
 use crate::icons::Icon;
+#[cfg(test)]
+use crate::module::Audio;
 use crate::module::{Cx, DrawCx, Env, Module, ModuleId};
 
 pub fn create(cfg: &Config) -> Option<Box<dyn Module>> {
@@ -96,11 +98,11 @@ impl Module for Clock {
     }
 
     fn expanded_size(&self) -> Size {
-        Size::new(320.0, 112.0)
+        Size::new(344.0, 112.0)
     }
 
     fn peek_size(&self) -> Option<Size> {
-        Some(Size::new(250.0, 54.0))
+        Some(Size::new(274.0, 54.0))
     }
 
     fn on_poll(&mut self, cx: &mut Cx) {
@@ -211,6 +213,7 @@ mod tests {
         Env {
             local: LocalTime::new(2026, 10, 6, h, mi, s),
             system_24h: true,
+            audio: Audio::Idle,
         }
     }
 
@@ -370,7 +373,8 @@ mod tests {
                 &mut c,
                 &Env {
                     local: LocalTime::new(2026, 10, 7, 10, 16, 30),
-                    system_24h: true
+                    system_24h: true,
+                    audio: Audio::Idle
                 }
             ),
             "date change also redraws"
@@ -392,7 +396,7 @@ mod tests {
         let host_cfg = Arc::new(Config::default());
         let mut h = ModuleHost::new(crate::modules::registry(), host_cfg, Theme::default());
         assert_eq!(h.page_ids(), vec!["clock"]);
-        assert_eq!(h.pages(), vec![Size::new(320.0, 112.0)]);
+        assert_eq!(h.pages(), vec![Size::new(344.0, 112.0)]);
         h.set_context(100.0, at(10, 0, 0));
         h.set_view(None);
         assert_eq!(

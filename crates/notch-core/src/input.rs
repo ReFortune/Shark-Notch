@@ -9,6 +9,8 @@ pub enum Input {
     Move(Vec2),
     Down(Vec2),
     Up(Vec2),
+    /// Press and release landed on the same hit region (the region id arrives as `hit`).
+    Click(Vec2),
     /// Pointer left the notch.
     Leave,
     /// Wheel / touchpad scroll in raw `WHEEL_DELTA` units (120 = one notch). Positive `dy` is

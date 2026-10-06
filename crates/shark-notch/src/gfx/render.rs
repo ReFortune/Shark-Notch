@@ -7,27 +7,33 @@
 //! * icons are the shared vector paths, geometry cached per icon.
 
 use std::collections::HashMap;
+use std::ffi::c_void;
 use std::hash::{Hash, Hasher};
 use std::mem::ManuallyDrop;
+use std::sync::Arc;
 
 use notch_core::color::Color;
 use notch_core::draw::{Align, DrawCmd, DrawList, ImageId, TextStyle, Weight};
 use notch_core::geom::{Rect, Vec2};
 use notch_core::icons::{self, GRID, Icon, IconOp};
+use notch_core::image::{ImageCache, ImageData};
 use notch_core::path::{Path, PathCmd, rounded_rect_path};
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D_RECT_F, D2D1_BEZIER_SEGMENT, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_FILLED,
-    D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN, D2D1_FILL_MODE_WINDING, D2D1_GRADIENT_STOP,
+    D2D_RECT_F, D2D_SIZE_U, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_BEZIER_SEGMENT, D2D1_COLOR_F,
+    D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_END_CLOSED, D2D1_FIGURE_END_OPEN, D2D1_FILL_MODE_WINDING,
+    D2D1_GRADIENT_STOP, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
-    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BUFFER_PRECISION_8BPC_UNORM, D2D1_CAP_STYLE_ROUND,
-    D2D1_COLOR_INTERPOLATION_MODE_PREMULTIPLIED, D2D1_COLOR_SPACE_SRGB, D2D1_DASH_STYLE_SOLID,
-    D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_DRAW_TEXT_OPTIONS_NO_SNAP, D2D1_ELLIPSE,
-    D2D1_EXTEND_MODE_CLAMP, D2D1_INTERPOLATION_MODE_LINEAR, D2D1_LAYER_OPTIONS1_NONE,
-    D2D1_LAYER_PARAMETERS1, D2D1_LINE_JOIN_ROUND, D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES,
-    D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES, D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES1,
-    D2D1_STROKE_TRANSFORM_TYPE_NORMAL, ID2D1Bitmap, ID2D1Brush, ID2D1Geometry, ID2D1Layer,
-    ID2D1PathGeometry1, ID2D1SolidColorBrush, ID2D1StrokeStyle,
+    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_BITMAP_BRUSH_PROPERTIES1, D2D1_BITMAP_OPTIONS_NONE,
+    D2D1_BITMAP_PROPERTIES1, D2D1_BRUSH_PROPERTIES, D2D1_BUFFER_PRECISION_8BPC_UNORM,
+    D2D1_CAP_STYLE_ROUND, D2D1_COLOR_INTERPOLATION_MODE_PREMULTIPLIED, D2D1_COLOR_SPACE_SRGB,
+    D2D1_DASH_STYLE_SOLID, D2D1_DRAW_TEXT_OPTIONS_CLIP, D2D1_DRAW_TEXT_OPTIONS_NO_SNAP,
+    D2D1_ELLIPSE, D2D1_EXTEND_MODE_CLAMP, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+    D2D1_LAYER_OPTIONS1_NONE, D2D1_LAYER_PARAMETERS1, D2D1_LINE_JOIN_ROUND,
+    D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES, D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES,
+    D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES1, D2D1_STROKE_TRANSFORM_TYPE_NORMAL,
+    ID2D1Bitmap1, ID2D1Brush, ID2D1DeviceContext, ID2D1Geometry, ID2D1Layer, ID2D1PathGeometry1,
+    ID2D1SolidColorBrush, ID2D1StrokeStyle,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT,
@@ -37,6 +43,7 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_TRIMMING_GRANULARITY_CHARACTER, DWRITE_WORD_WRAPPING_NO_WRAP, DWRITE_WORD_WRAPPING_WRAP,
     IDWriteFactory, IDWriteFontCollection, IDWriteTextFormat, IDWriteTextLayout,
 };
+use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::core::{BOOL, Interface, PCWSTR, Result};
 use windows_numerics::{Matrix3x2, Vector2};
 
@@ -137,25 +144,73 @@ fn v2(p: Vec2) -> Vector2 {
     Vector2 { X: p.x, Y: p.y }
 }
 
-/// Decoded images by id (album art, thumbnails). Filled by the platform services, read here.
-#[derive(Default)]
+/// GPU copies of decoded images, uploaded on first use from the shared CPU cache.
+///
+/// The cache (owned by the app, filled by worker threads) is the source of truth; this store only
+/// holds Direct2D bitmaps for the images that were actually drawn, and forgets the ones the cache
+/// no longer has. Releasing the GPU stack drops the whole store; the next draw re-uploads.
 pub struct ImageStore {
-    map: HashMap<u64, ID2D1Bitmap>,
+    cache: Arc<ImageCache>,
+    bitmaps: HashMap<u64, ID2D1Bitmap1>,
+    seen_generation: u64,
 }
 
-// The media and clipboard modules (phases 3-4) fill this store.
-#[allow(dead_code)]
 impl ImageStore {
-    pub fn insert(&mut self, id: ImageId, bmp: ID2D1Bitmap) {
-        self.map.insert(id.0, bmp);
+    pub fn new(cache: Arc<ImageCache>) -> ImageStore {
+        ImageStore {
+            seen_generation: cache.generation(),
+            cache,
+            bitmaps: HashMap::new(),
+        }
     }
 
-    pub fn remove(&mut self, id: ImageId) {
-        self.map.remove(&id.0);
+    /// The GPU bitmap for `id`, uploading it now if needed. `None` if the image no longer exists.
+    fn bitmap(&mut self, dc: &ID2D1DeviceContext, id: ImageId) -> Option<ID2D1Bitmap1> {
+        let generation = self.cache.generation();
+        if generation != self.seen_generation {
+            self.seen_generation = generation;
+            let cache = &self.cache;
+            self.bitmaps.retain(|k, _| cache.contains(ImageId(*k)));
+        }
+        if let Some(b) = self.bitmaps.get(&id.0) {
+            return Some(b.clone());
+        }
+        let data = self.cache.get(id)?;
+        let bmp = upload(dc, &data)
+            .map_err(|e| crate::warn!("cannot upload image {}: {e}", id.0))
+            .ok()?;
+        self.bitmaps.insert(id.0, bmp.clone());
+        Some(bmp)
     }
 
-    pub fn clear(&mut self) {
-        self.map.clear();
+    /// How many images currently have a GPU copy (diagnostics).
+    pub fn uploaded(&self) -> usize {
+        self.bitmaps.len()
+    }
+}
+
+/// Create a premultiplied-BGRA Direct2D bitmap from decoded pixels.
+fn upload(dc: &ID2D1DeviceContext, data: &ImageData) -> Result<ID2D1Bitmap1> {
+    let props = D2D1_BITMAP_PROPERTIES1 {
+        pixelFormat: D2D1_PIXEL_FORMAT {
+            format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+        },
+        dpiX: 96.0,
+        dpiY: 96.0,
+        bitmapOptions: D2D1_BITMAP_OPTIONS_NONE,
+        colorContext: ManuallyDrop::new(None),
+    };
+    unsafe {
+        dc.CreateBitmap(
+            D2D_SIZE_U {
+                width: data.w,
+                height: data.h,
+            },
+            Some(data.bgra.as_ptr() as *const c_void),
+            data.w * 4,
+            &props,
+        )
     }
 }
 
@@ -438,7 +493,7 @@ impl Renderer {
     // ----- the executor ---------------------------------------------------------------------
 
     /// Draw the list. The caller has already called `BeginDraw` and cleared the target.
-    pub fn draw(&mut self, gpu: &GpuStack, list: &DrawList, images: &ImageStore) -> Result<()> {
+    pub fn draw(&mut self, gpu: &GpuStack, list: &DrawList, images: &mut ImageStore) -> Result<()> {
         self.xform.clear();
         self.xform.push(Mat::IDENTITY);
         self.alpha.clear();
@@ -612,8 +667,8 @@ impl Renderer {
                     radius,
                     opacity,
                 } => {
-                    if let Some(bmp) = images.map.get(&id.0) {
-                        self.draw_image(gpu, bmp, *rect, *radius, opacity * alpha)?;
+                    if let Some(bmp) = images.bitmap(&gpu.dc, *id) {
+                        self.draw_image(gpu, &bmp, *rect, *radius, opacity * alpha)?;
                     }
                 }
                 DrawCmd::Gradient {
@@ -784,27 +839,50 @@ impl Renderer {
         }
     }
 
+    /// Draw `bmp` filling `rect` ("cover": scaled to fill, cropping the overflow, centred) with
+    /// continuous rounded corners. A bitmap brush fills the rounded geometry directly, so no mask
+    /// layer (a full offscreen pass) is needed per image.
     fn draw_image(
         &mut self,
         gpu: &GpuStack,
-        bmp: &ID2D1Bitmap,
+        bmp: &ID2D1Bitmap1,
         rect: Rect,
         radius: f32,
         opacity: f32,
     ) -> Result<()> {
-        // Rounded images: clip with a mask layer, then blit.
-        self.push_clip(gpu, rect, radius)?;
-        unsafe {
-            gpu.dc.DrawBitmap(
-                bmp,
-                Some(&rect_f(rect)),
-                opacity.clamp(0.0, 1.0),
-                D2D1_INTERPOLATION_MODE_LINEAR,
-                None,
-                None,
-            );
+        let px = unsafe { bmp.GetPixelSize() };
+        let (bw, bh) = (px.width as f32, px.height as f32);
+        if bw < 1.0 || bh < 1.0 || rect.w <= 0.0 || rect.h <= 0.0 {
+            return Ok(());
         }
-        self.pop_clip(gpu);
+        let k = (rect.w / bw).max(rect.h / bh);
+        let (dx, dy) = (
+            rect.x + (rect.w - bw * k) * 0.5,
+            rect.y + (rect.h - bh * k) * 0.5,
+        );
+        let brush = unsafe {
+            gpu.dc.CreateBitmapBrush(
+                bmp,
+                Some(&D2D1_BITMAP_BRUSH_PROPERTIES1 {
+                    extendModeX: D2D1_EXTEND_MODE_CLAMP,
+                    extendModeY: D2D1_EXTEND_MODE_CLAMP,
+                    interpolationMode: D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC,
+                }),
+                Some(&D2D1_BRUSH_PROPERTIES {
+                    opacity: opacity.clamp(0.0, 1.0),
+                    transform: Matrix3x2 {
+                        M11: k,
+                        M12: 0.0,
+                        M21: 0.0,
+                        M22: k,
+                        M31: dx,
+                        M32: dy,
+                    },
+                }),
+            )?
+        };
+        let geom = self.geometry(gpu, &rounded_rect_path(rect, [radius; 4], 0.6))?;
+        unsafe { gpu.dc.FillGeometry(&geom, &brush, None::<&ID2D1Brush>) };
         Ok(())
     }
 }
