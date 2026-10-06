@@ -100,6 +100,33 @@ pub enum StatsCmd {
     Sample { gpu: bool },
 }
 
+/// Which radio a toggle is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RadioKind {
+    Wifi,
+    Bluetooth,
+}
+
+/// Operations on the command centre's controls. Levels are 0..=1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ControlCmd {
+    /// Read every control and answer with a `Control` event (sent while the page is on screen).
+    Refresh,
+    SetVolume(f32),
+    ToggleMute,
+    SetBrightness(f32),
+    SetRadio {
+        kind: RadioKind,
+        on: bool,
+    },
+    /// Start Windows' screen snip (the Snipping Tool overlay).
+    Snip,
+    /// Open Windows' do-not-disturb settings (there is no supported way to flip it from outside).
+    OpenFocusSettings,
+    /// Open Windows' radio privacy settings (the toggle was refused by a privacy setting).
+    OpenRadioSettings,
+}
+
 /// Operations on the small persistent store (one JSON document per key, under the app's data folder).
 #[derive(Clone, Debug, PartialEq)]
 pub enum StoreCmd {
@@ -126,6 +153,7 @@ pub enum Command {
     Calendar(CalCmd),
     Store(StoreCmd),
     Stats(StatsCmd),
+    Control(ControlCmd),
 }
 
 /// Requests that concern the shell itself.
@@ -830,6 +858,14 @@ impl ModuleHost {
         // Draw left-to-right in page order for a stable layout.
         v.sort_by_key(|c| c.0);
         v.into_iter().map(|(i, w, _)| (i, w)).collect()
+    }
+
+    /// Which modules have a chip in the pill right now (for diagnostics).
+    pub fn chip_owners(&self) -> Vec<ModuleId> {
+        self.chip_slots()
+            .into_iter()
+            .map(|(i, _)| self.entries[i].module.id())
+            .collect()
     }
 
     /// Total pill width needed for the current chips (0 = none).

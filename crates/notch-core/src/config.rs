@@ -491,6 +491,24 @@ impl Default for StatsCfg {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+pub struct ControlCfg {
+    pub enabled: bool,
+    /// Seconds between readings of the controls while the page is on screen (so a volume key
+    /// pressed elsewhere shows up); nothing is read while it is not.
+    pub interval_secs: f32,
+}
+
+impl Default for ControlCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_secs: 1.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Modules {
     /// Page order. Unknown ids are ignored; modules that are disabled are skipped.
     pub order: Vec<String>,
@@ -508,6 +526,7 @@ impl Default for Modules {
                 "pomodoro".into(),
                 "live".into(),
                 "stats".into(),
+                "control".into(),
                 "clock".into(),
             ],
         }
@@ -533,6 +552,7 @@ pub struct Config {
     pub pomodoro: PomodoroCfg,
     pub live: LiveCfg,
     pub stats: StatsCfg,
+    pub control: ControlCfg,
     pub clock: ClockCfg,
 }
 
@@ -773,6 +793,13 @@ impl Config {
             "stats.interval_secs",
             w,
         );
+        clamp_f(
+            &mut self.control.interval_secs,
+            0.5,
+            5.0,
+            "control.interval_secs",
+            w,
+        );
         // Quick timers: 1 minute to 10 hours, at most six buttons.
         let presets = std::mem::take(&mut self.live.timer_presets);
         let before = presets.len();
@@ -863,6 +890,7 @@ impl Config {
             "pomodoro" => self.pomodoro.enabled,
             "live" => self.live.enabled,
             "stats" => self.stats.enabled,
+            "control" => self.control.enabled,
             _ => false,
         };
         enabled && self.modules.order.iter().any(|m| m == id)
@@ -954,7 +982,7 @@ show_missed_indicator = true
 peek_over_fullscreen = false
 
 [modules]
-order = ["media", "clipboard", "shelf", "notifications", "calendar", "pomodoro", "live", "stats", "clock"]   # page order; a module that is disabled in its own section is skipped
+order = ["media", "clipboard", "shelf", "notifications", "calendar", "pomodoro", "live", "stats", "control", "clock"]   # page order; a module that is disabled in its own section is skipped
 
 [media]
 enabled = true                 # follows whatever Windows considers the current media session
@@ -1018,6 +1046,10 @@ enabled = true
 interval_secs = 1.0            # between readings while the page is on screen; nothing is read while it is not
 gpu = true                     # read the GPU utilisation counters too (the dearest reading); off hides the GPU tile
 net_bits = false               # network speeds in Mbps instead of MB/s
+
+[control]
+enabled = true                 # volume, brightness, Wi-Fi, Bluetooth, a snip button and Focus; see docs/CONTROL.md
+interval_secs = 1.0            # between readings while the page is on screen; nothing is read while it is not
 
 [clock]
 enabled = true

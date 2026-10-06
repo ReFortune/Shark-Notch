@@ -114,6 +114,10 @@ pub struct SelfTest {
     /// The stats page scenario: `Stats` events seen at a point, and the start of the CPU window.
     stats_mark: u32,
     stats_begin: Option<Mark>,
+    /// Private working set (MiB) when the stats page opened, to compare after it closed.
+    stats_ws_before: f64,
+    /// `Control` events seen at a point of the command-centre scenario.
+    control_mark: u32,
     /// Cycles per second of a busy core (calibrated), for tick-free CPU percentages.
     cycles_hz: f64,
     warm_idle: Option<(f64, f64)>,     // (cpu %, private MiB)
@@ -225,6 +229,11 @@ enum Act {
     StatsClose,
     StatsSettled,
     StatsQuietCheck,
+    ControlPage,
+    ControlCheck,
+    ControlClose,
+    ControlSettled,
+    ControlQuietCheck,
     Report,
 }
 
@@ -335,7 +344,12 @@ const SCRIPT: &[(f64, Act)] = &[
     (91.5, Act::StatsClose),
     (92.2, Act::StatsSettled),
     (94.8, Act::StatsQuietCheck),
-    (95.2, Act::Report),
+    (95.2, Act::ControlPage),
+    (97.4, Act::ControlCheck),
+    (97.6, Act::ControlClose),
+    (98.3, Act::ControlSettled),
+    (100.9, Act::ControlQuietCheck),
+    (101.3, Act::Report),
 ];
 
 const CLIP_TEXT: &str = "Selftest clipboard text";
@@ -574,6 +588,8 @@ pub fn begin(a: &mut App) {
         dl_mark: (0, 0),
         stats_mark: 0,
         stats_begin: None,
+        stats_ws_before: 0.0,
+        control_mark: 0,
         cycles_hz: sys::cycles_per_sec(),
         warm_idle: None,
         released_idle: None,
@@ -1384,6 +1400,13 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
         Act::CalOff => {
             reconfigure(a, |c| c.calendar.feeds.clear());
             let _ = std::fs::remove_file(paths::data_dir().join("selftest.ics"));
+            // Disconnecting a calendar must take its events and its chip with it.
+            let owners = a.host.chip_owners();
+            if owners.contains(&"calendar") {
+                st.fail(format!(
+                    "calendar: its chip stayed on the pill after the feed was removed (chips: {owners:?})"
+                ));
+            }
         }
         Act::PomoSetup => reconfigure(a, |c| {
             c.pomodoro.focus_minutes = 0.05;
@@ -1605,15 +1628,16 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
         Act::PrivacyOffCheck => {
             if a.opts.registry_probe {
                 a.maybe_release_gpu(now);
+                let owners = a.host.chip_owners();
                 st.say(format!(
-                    "live: the record was removed: the chip is gone ({}) and the GPU released ({})",
+                    "live: the record was removed: the chip is gone ({}) and the GPU released ({}); chips still on the pill: {owners:?}",
                     a.host.chips_width() == 0.0,
                     a.stage.is_none()
                 ));
                 if a.host.chips_width() != 0.0 {
-                    st.fail(
-                        "live: the privacy chip stayed after the microphone was released".into(),
-                    );
+                    st.fail(format!(
+                        "live: a chip stayed after the microphone was released (chips: {owners:?})"
+                    ));
                 }
                 if a.stage.is_some() {
                     st.fail(
@@ -1735,7 +1759,9 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
         },
         Act::StatsBegin => {
             st.stats_mark = a.bus_counts[Kind::Stats as usize];
-            st.stats_begin = Some(mark());
+            let m = mark();
+            st.stats_ws_before = sys::mib(m.m.private_ws);
+            st.stats_begin = Some(m);
         }
         Act::StatsCheck => {
             let end = mark();
@@ -1754,7 +1780,7 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
                 .count();
             st.say(format!(
                 "stats: {got} reading(s) in the 3.2 s the page was open (one per second asked for by the host's poll); tiles CPU/Memory/GPU/Network/Battery drawn: {}; {percent} percentage value(s); {charts} chart shape(s) in the last frame",
-                has("CPU") && has("Memory") && has("GPU") && has("Network") && has("Battery")
+                has("CPU") && has("Memory") && has("GPU") && has("Network") && (has("Battery") || text.iter().any(|t| t.starts_with("No battery")))
             ));
             if let Some(b) = st.stats_begin.take() {
                 let secs = (end.t - b.t).max(1e-3);
@@ -1764,7 +1790,8 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
                     (end.m.cpu_secs - b.m.cpu_secs) / secs * 100.0
                 };
                 st.say(format!(
-                    "stats: with the page open and sampling once a second this process used {cpu:.2}% of a core over {secs:.1} s ({:.1} MiB private)",
+                    "stats: with the page open and sampling once a second this process used {cpu:.2}% of a core over {secs:.1} s (private working set {:.1} MiB before, {:.1} MiB after)",
+                    sys::mib(b.m.private_ws),
                     sys::mib(end.m.private_ws)
                 ));
             }
@@ -1772,7 +1799,11 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
                 ("a few readings arrived while the page was open", got >= 2),
                 (
                     "the tiles are drawn",
-                    has("CPU") && has("Memory") && has("GPU") && has("Network") && has("Battery"),
+                    has("CPU")
+                        && has("Memory")
+                        && has("GPU")
+                        && has("Network")
+                        && (has("Battery") || text.iter().any(|t| t.starts_with("No battery"))),
                 ),
                 ("CPU and memory show percentages", percent >= 2),
                 ("history charts are drawn", charts >= 2),
@@ -1786,11 +1817,85 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
         Act::StatsSettled => st.stats_mark = a.bus_counts[Kind::Stats as usize],
         Act::StatsQuietCheck => {
             let extra = a.bus_counts[Kind::Stats as usize] - st.stats_mark;
+            let ws = sys::mib(mark().m.private_ws);
             st.say(format!(
-                "stats: {extra} reading(s) in the 2.6 s after the page was closed (nothing may be measured while it is not on screen)"
+                "stats: {extra} reading(s) in the 2.6 s after the page was closed (nothing may be measured while it is not on screen); private working set {ws:.1} MiB now, {:.1} MiB when the page opened",
+                st.stats_ws_before
             ));
             if extra != 0 {
                 st.fail("stats: readings kept arriving after the page was closed".into());
+            }
+        }
+        Act::ControlPage => {
+            // The worker behind the page is created by its first request, not before.
+            let lazy = !a.services.control_running();
+            st.say(format!(
+                "control: no worker thread, COM or WinRT exists before the page is first opened: {lazy}"
+            ));
+            if !lazy {
+                st.fail("control: the worker was started before the page was ever opened".into());
+            }
+            st.control_mark = a.bus_counts[Kind::Control as usize];
+            match a.host.page_of("control") {
+                Some(p) => {
+                    a.shell.set_page(now, p);
+                    a.expand(Trigger::Hotkey);
+                }
+                None => st.fail("the control page is not in the ring".into()),
+            }
+        }
+        Act::ControlCheck => {
+            let got = a.bus_counts[Kind::Control as usize] - st.control_mark;
+            let text = drawn_text(a);
+            let has = |s: &str| text.iter().any(|t| t == s);
+            let tiles = has("Wi-Fi") && has("Bluetooth") && has("Focus") && has("Snip");
+            let pending = has("…");
+            let volume = if has("No audio output device") {
+                "no audio output device on this PC".to_string()
+            } else {
+                "a volume slider".to_string()
+            };
+            let brightness = if has("Brightness: not available on this display") {
+                "no controllable panel".to_string()
+            } else {
+                "a brightness slider".to_string()
+            };
+            st.say(format!(
+                "control: {got} reading(s) while the page was open; tiles drawn: {tiles}; still waiting for the first reading: {pending}; this PC shows {volume} and {brightness}; worker running now: {}",
+                a.services.control_running()
+            ));
+            if got == 0 || !tiles || pending {
+                st.fail(format!("control: the page did not fill in: {text:?}"));
+            }
+            if !a.services.control_running() {
+                st.fail("control: the first request did not start the worker".into());
+            }
+            // The two buttons that hand over to Windows, through the real mouse path. (The
+            // self-test records the address instead of launching Settings or the snip overlay.)
+            a.last_open_url = None;
+            let focus = click_region(a, 3);
+            let focus_url = a.last_open_url.take();
+            let snip = click_region(a, 4);
+            let snip_url = a.last_open_url.take();
+            st.say(format!(
+                "control: the Focus tile asked to open {focus_url:?}; the Snip tile asked to open {snip_url:?}"
+            ));
+            if !focus || focus_url.as_deref() != Some("ms-settings:quietmomentshome") {
+                st.fail("control: the Focus tile did not open Windows' Focus settings".into());
+            }
+            if !snip || snip_url.as_deref() != Some("ms-screenclip:") {
+                st.fail("control: the Snip tile did not start the screen snip".into());
+            }
+        }
+        Act::ControlClose => a.collapse(true),
+        Act::ControlSettled => st.control_mark = a.bus_counts[Kind::Control as usize],
+        Act::ControlQuietCheck => {
+            let extra = a.bus_counts[Kind::Control as usize] - st.control_mark;
+            st.say(format!(
+                "control: {extra} reading(s) in the 2.6 s after the page was closed (nothing may be read while it is not on screen)"
+            ));
+            if extra != 0 {
+                st.fail("control: readings kept arriving after the page was closed".into());
             }
         }
         Act::Report => finish(a, st),

@@ -6,6 +6,7 @@ use crate::module::Factory;
 pub mod calendar;
 pub mod clipboard;
 pub mod clock;
+pub mod control;
 pub mod live;
 pub mod media;
 pub mod notifications;
@@ -47,6 +48,10 @@ pub fn registry() -> Vec<Factory> {
         Factory {
             id: "stats",
             create: stats::create,
+        },
+        Factory {
+            id: "control",
+            create: control::create,
         },
         Factory {
             id: "clock",

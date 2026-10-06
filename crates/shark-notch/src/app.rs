@@ -23,7 +23,9 @@ use notch_core::geom::{Rect, Size, Vec2};
 use notch_core::hover::{Cadence, HoverAction, HoverFsm, HoverParams};
 use notch_core::image::ImageCache;
 use notch_core::input::Input;
-use notch_core::module::{Audio, Command, Env, ModuleHost, ModuleId, ShelfCmd, ShellRequest};
+use notch_core::module::{
+    Audio, Command, ControlCmd, Env, ModuleHost, ModuleId, ShelfCmd, ShellRequest,
+};
 use notch_core::modules;
 use notch_core::raster;
 use notch_core::sched::{Scheduler, TimerId};
@@ -1234,20 +1236,31 @@ impl App {
                 if self.opts.selftest {
                     self.last_open_url = Some(url.clone());
                 } else if u.starts_with("https://") || u.starts_with("http://") {
-                    let w = wide(u);
-                    unsafe {
-                        ShellExecuteW(
-                            None,
-                            windows::core::w!("open"),
-                            PCWSTR(w.as_ptr()),
-                            PCWSTR::null(),
-                            PCWSTR::null(),
-                            SW_SHOWNORMAL,
-                        );
-                    }
+                    shell_open(u);
                 } else {
                     warn!("refused to open a non-http(s) URL");
                 }
+            }
+            // The command centre's buttons that hand over to Windows. The addresses are fixed
+            // here; nothing from outside ever reaches them.
+            Command::Control(
+                cc @ (ControlCmd::Snip
+                | ControlCmd::OpenFocusSettings
+                | ControlCmd::OpenRadioSettings),
+            ) => {
+                let uri = match cc {
+                    ControlCmd::Snip => "ms-screenclip:",
+                    ControlCmd::OpenFocusSettings => "ms-settings:quietmomentshome",
+                    _ => "ms-settings:privacy-radios",
+                };
+                if self.opts.selftest {
+                    self.last_open_url = Some(uri.into());
+                } else {
+                    shell_open(uri);
+                }
+            }
+            Command::Control(_) => {
+                self.services.command(&c);
             }
         }
     }
@@ -1895,6 +1908,21 @@ impl App {
         if self.animating() && (self.stage.is_none() || now < self.frame_block_until) {
             self.shell.step(now);
         }
+    }
+}
+
+/// Hand an address to the shell (a web page, a Settings page, the snip overlay).
+fn shell_open(target: &str) {
+    let w = wide(target);
+    unsafe {
+        ShellExecuteW(
+            None,
+            windows::core::w!("open"),
+            PCWSTR(w.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        );
     }
 }
 

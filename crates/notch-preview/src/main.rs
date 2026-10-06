@@ -455,6 +455,17 @@ fn modules_sheet(out: &str, theme: Theme) {
             data: Some(saved.into()),
         }),
     )]);
+    // Command centre: Wi-Fi on, Bluetooth off, a volume and a brightness level.
+    host.dispatch(vec![Event::new(
+        Source::Local,
+        EventKind::Control(std::sync::Arc::new(notch_core::events::ControlState {
+            volume: Some((0.62, false)),
+            brightness: Some(0.7),
+            wifi: notch_core::events::Radio::On,
+            bluetooth: notch_core::events::Radio::Off,
+            dnd: Some(false),
+        })),
+    )]);
     // System stats: a minute of readings (a busy stretch in the middle), on battery.
     let reading = |i: usize| {
         let x = i as f32;

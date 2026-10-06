@@ -50,11 +50,25 @@ pub enum Icon {
     Pulse,
     /// A lightning bolt: charging.
     Bolt,
+    /// Wi-Fi: a dot and three arcs.
+    Wifi,
+    /// The Bluetooth rune.
+    Bluetooth,
+    /// A crescent moon: do not disturb.
+    Moon,
+    /// A speaker with sound waves.
+    Speaker,
+    /// A speaker with a cross: muted.
+    SpeakerMuted,
+    /// A sun: brightness.
+    Sun,
+    /// Corner brackets: a screen snip.
+    Snip,
 }
 
 impl Icon {
     /// Every icon, for tests and the preview tool.
-    pub const ALL: [Icon; 30] = [
+    pub const ALL: [Icon; 37] = [
         Icon::Play,
         Icon::Pause,
         Icon::Next,
@@ -85,6 +99,13 @@ impl Icon {
         Icon::Download,
         Icon::Pulse,
         Icon::Bolt,
+        Icon::Wifi,
+        Icon::Bluetooth,
+        Icon::Moon,
+        Icon::Speaker,
+        Icon::SpeakerMuted,
+        Icon::Sun,
+        Icon::Snip,
     ];
 }
 
@@ -450,6 +471,93 @@ pub fn ops(icon: Icon) -> Vec<IconOp> {
             ],
             true,
         ))],
+        Icon::Wifi => {
+            let mut v: Vec<IconOp> = [5.0, 9.0, 13.0]
+                .iter()
+                .map(|&r| Stroke(arc_path(12.0, 19.0, r, -45.0, 90.0), 2.0))
+                .collect();
+            v.push(Fill(circle_path(12.0, 19.0, 1.7)));
+            v
+        }
+        Icon::Bluetooth => vec![Stroke(
+            polyline(
+                &[
+                    (7.0, 8.0),
+                    (17.0, 16.0),
+                    (12.0, 21.0),
+                    (12.0, 3.0),
+                    (17.0, 8.0),
+                    (7.0, 16.0),
+                ],
+                false,
+            ),
+            2.0,
+        )],
+        Icon::Moon => {
+            // A crescent: the big circle's long arc, then back along a smaller circle's arc.
+            let mut path = arc_path(12.0, 12.0, 9.0, 95.0, 260.0);
+            let inner = arc_path(16.84, 7.16, 7.0, 306.5, -163.0);
+            path.cmds.extend(inner.cmds.into_iter().skip(1));
+            path.close();
+            vec![Stroke(path, 2.0)]
+        }
+        Icon::Speaker | Icon::SpeakerMuted => {
+            let mut v = vec![Stroke(
+                polyline(
+                    &[
+                        (3.5, 9.5),
+                        (7.5, 9.5),
+                        (12.5, 5.0),
+                        (12.5, 19.0),
+                        (7.5, 14.5),
+                        (3.5, 14.5),
+                    ],
+                    true,
+                ),
+                2.0,
+            )];
+            if icon == Icon::Speaker {
+                v.push(Stroke(arc_path(12.5, 12.0, 4.4, 55.0, 70.0), 2.0));
+                v.push(Stroke(arc_path(12.5, 12.0, 8.2, 52.0, 76.0), 2.0));
+            } else {
+                v.push(Stroke(polyline(&[(16.5, 9.5), (21.5, 14.5)], false), 2.0));
+                v.push(Stroke(polyline(&[(21.5, 9.5), (16.5, 14.5)], false), 2.0));
+            }
+            v
+        }
+        Icon::Sun => {
+            let mut v = vec![Stroke(circle_path(12.0, 12.0, 4.2), 2.0)];
+            for k in 0..8 {
+                let a = (k as f32 * 45.0).to_radians();
+                let (s, c) = (a.sin(), a.cos());
+                v.push(Stroke(
+                    polyline(
+                        &[
+                            (12.0 + 7.4 * s, 12.0 - 7.4 * c),
+                            (12.0 + 9.8 * s, 12.0 - 9.8 * c),
+                        ],
+                        false,
+                    ),
+                    2.0,
+                ));
+            }
+            v
+        }
+        Icon::Snip => vec![
+            Stroke(polyline(&[(3.0, 9.0), (3.0, 3.0), (9.0, 3.0)], false), 2.0),
+            Stroke(
+                polyline(&[(15.0, 3.0), (21.0, 3.0), (21.0, 9.0)], false),
+                2.0,
+            ),
+            Stroke(
+                polyline(&[(21.0, 15.0), (21.0, 21.0), (15.0, 21.0)], false),
+                2.0,
+            ),
+            Stroke(
+                polyline(&[(9.0, 21.0), (3.0, 21.0), (3.0, 15.0)], false),
+                2.0,
+            ),
+        ],
         Icon::Download => vec![
             Stroke(polyline(&[(12.0, 3.5), (12.0, 14.5)], false), 2.0),
             Stroke(

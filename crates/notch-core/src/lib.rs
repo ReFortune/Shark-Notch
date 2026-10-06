@@ -8,6 +8,7 @@ pub mod clipstore;
 pub mod color;
 pub mod compose;
 pub mod config;
+pub mod control;
 pub mod demo;
 pub mod dib;
 pub mod downloads;

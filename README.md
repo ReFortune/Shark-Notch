@@ -96,7 +96,7 @@ locked, display-off or a fullscreen app is foreground.
 | 7 | Calendar (ICS feeds, month view, Join banner, countdown chip) + Pomodoro with tasks | implemented — real feeds and typing need your machine, see [`docs/CALENDAR_AND_FOCUS.md`](docs/CALENDAR_AND_FOCUS.md) |
 | 8 | Live activities (microphone/camera chip, quick timers, browser downloads with *Show in folder*) | implemented — the privacy chip and real browsers need your machine; copy progress is **not** feasible, see [`docs/LIVE.md`](docs/LIVE.md) |
 | 9 | System stats (CPU, memory, GPU, network, battery; read only while the page is open) | implemented — GPU counters and battery need your hardware, see [`docs/STATS.md`](docs/STATS.md) |
-| 10 | Command centre | planned |
+| 10 | Command centre (volume, brightness, Wi-Fi, Bluetooth, Focus state, snip) | implemented — every control needs your hardware to be proven; Focus can only be read, see [`docs/CONTROL.md`](docs/CONTROL.md) |
 | 11 | iPhone listener | planned |
 
 ## Attribution and licence

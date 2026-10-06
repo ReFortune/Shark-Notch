@@ -49,6 +49,8 @@ use crate::win::util::wide;
 const FRESH: Duration = Duration::from_secs(3);
 /// How long the first reading of a session waits for its second.
 const BASELINE_WAIT: Duration = Duration::from_millis(250);
+/// After this long without a request the open GPU query and the last reading are released.
+const RELEASE_AFTER: Duration = Duration::from_secs(5);
 
 enum Req {
     Sample { gpu: bool },
@@ -104,7 +106,24 @@ impl StatsService {
 fn run(rx: &Receiver<Req>, bus: &BusSender) {
     let mut sampler = Sampler::default();
     loop {
-        let Ok(first) = rx.recv() else { return };
+        // Asleep until asked. Once the page has been closed for a few seconds, the PDH query and
+        // the previous reading are let go (the one wake-up this thread ever makes on its own), so
+        // a closed page holds no memory beyond the thread itself.
+        let first = if sampler.holds_resources() {
+            match rx.recv_timeout(RELEASE_AFTER) {
+                Ok(r) => r,
+                Err(RecvTimeoutError::Timeout) => {
+                    sampler.release();
+                    continue;
+                }
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+        } else {
+            match rx.recv() {
+                Ok(r) => r,
+                Err(_) => return,
+            }
+        };
         let Req::Sample { mut gpu } = first else {
             return;
         };
@@ -301,6 +320,15 @@ struct Sampler {
 }
 
 impl Sampler {
+    fn holds_resources(&self) -> bool {
+        self.last.is_some() || self.gpu.is_some()
+    }
+
+    fn release(&mut self) {
+        self.last = None;
+        self.gpu = None;
+    }
+
     /// One snapshot. `wait` pauses for a baseline reading and returns `false` if the service is
     /// being stopped (then there is no snapshot).
     fn sample(
@@ -470,6 +498,19 @@ mod tests {
             "{:?}",
             t.elapsed()
         );
+    }
+
+    #[test]
+    fn a_sampler_lets_go_of_what_it_holds_when_released() {
+        let mut sampler = Sampler::default();
+        assert!(!sampler.holds_resources());
+        let snap = sampler.sample(true, &mut |_| true).expect("a snapshot");
+        assert!(snap.mem_total > 0);
+        assert!(sampler.holds_resources());
+        sampler.release();
+        assert!(!sampler.holds_resources() && sampler.gpu.is_none());
+        // And it starts a fresh session afterwards.
+        assert!(sampler.sample(false, &mut |_| true).is_some());
     }
 
     #[test]

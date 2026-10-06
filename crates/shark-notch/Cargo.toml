@@ -16,6 +16,7 @@ notch-core = { path = "../notch-core" }
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = [
     "ApplicationModel",
+    "Devices_Radios",
     "Foundation",
     "Foundation_Collections",
     "Media_Control",

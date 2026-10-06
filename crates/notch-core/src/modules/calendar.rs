@@ -715,6 +715,11 @@ impl Module for Calendar {
 
     fn on_config(&mut self, cfg: &Config, cx: &mut Cx) {
         self.cfg = cfg.calendar.clone();
+        // A calendar that was disconnected takes its events (and the chip for the next meeting)
+        // with it; the service that would have refreshed them is gone.
+        if self.cfg.feeds.is_empty() && !self.data.events.is_empty() {
+            self.data = Arc::new(CalendarData::default());
+        }
         self.refresh_chip(cx.env.unix);
         cx.request_redraw();
     }
@@ -1267,6 +1272,35 @@ mod tests {
             None,
             "gone a couple of minutes after the start"
         );
+    }
+
+    #[test]
+    fn disconnecting_the_calendar_takes_its_events_and_its_chip_with_it() {
+        let mut t = T::new();
+        t.feed(vec![ev("Review", at(14, 10), 30, None)]);
+        assert_eq!(t.m.chip_width(), Some(CHIP_W), "a meeting 5 minutes away");
+        // The feed is removed from the configuration: nothing will ever refresh these events.
+        let mut cfg = Config::default();
+        cfg.calendar.feeds.clear();
+        {
+            let mut cx = cx!(t);
+            t.m.on_config(&cfg, &mut cx);
+        }
+        assert_eq!(
+            t.m.chip_width(),
+            None,
+            "no stale chip for a calendar that is gone"
+        );
+        assert!(t.m.data.events.is_empty());
+        // Changing one feed for another keeps what is shown until the new data arrives.
+        t.feed(vec![ev("Review", at(14, 10), 30, None)]);
+        let mut cfg = Config::default();
+        cfg.calendar.feeds = vec!["https://example.com/b.ics".into()];
+        {
+            let mut cx = cx!(t);
+            t.m.on_config(&cfg, &mut cx);
+        }
+        assert_eq!(t.m.chip_width(), Some(CHIP_W));
     }
 
     #[test]

@@ -10,13 +10,14 @@ use std::sync::{Arc, Mutex};
 use notch_core::bus::BusSender;
 use notch_core::config::Config;
 use notch_core::image::ImageCache;
-use notch_core::module::Command;
+use notch_core::module::{Command, ControlCmd};
 
 use crate::win::dragdrop::ShelfSlot;
 
 pub mod audio;
 pub mod calendar;
 pub mod clipboard;
+pub mod control;
 pub mod downloads;
 pub mod media;
 pub mod notifications;
@@ -38,6 +39,8 @@ pub struct Services {
     privacy: Option<privacy::PrivacyService>,
     downloads: Option<downloads::DownloadsService>,
     stats: Option<stats::StatsService>,
+    /// Started the first time the command-centre page asks for something.
+    control: Option<control::ControlService>,
     /// Whether the configuration wants the privacy watcher (it is stopped while suspended).
     want_privacy: bool,
     /// The shelf worker's inbox, shared with the OLE drop target (empty while the shelf is off).
@@ -60,6 +63,7 @@ impl Services {
             privacy: None,
             downloads: None,
             stats: None,
+            control: None,
             want_privacy: false,
             shelf_slot: Arc::new(Mutex::new(None)),
             suspended: false,
@@ -205,6 +209,14 @@ impl Services {
             _ => {}
         }
 
+        // The command centre's worker is created by its first request (see `command`); here it is
+        // only stopped when the module goes away.
+        if !cfg.module_active("control")
+            && let Some(c) = self.control.take()
+        {
+            c.stop();
+        }
+
         // The Downloads-folder watcher: restarted if the watched folder was changed.
         let want_downloads = cfg.module_active("live") && cfg.live.downloads;
         let running_dir = self.downloads.as_ref().map(|d| d.setting().to_string());
@@ -233,6 +245,11 @@ impl Services {
             }
             _ => {}
         }
+    }
+
+    /// Has the command centre's worker been started? (It starts with the page's first request.)
+    pub fn control_running(&self) -> bool {
+        self.control.is_some()
     }
 
     pub fn shelf_slot(&self) -> ShelfSlot {
@@ -294,6 +311,24 @@ impl Services {
                 }
                 true
             }
+            Command::Control(c) => {
+                // Opening Windows pages is the UI thread's job (`App::exec`); the rest is ours.
+                if matches!(
+                    c,
+                    ControlCmd::Snip
+                        | ControlCmd::OpenFocusSettings
+                        | ControlCmd::OpenRadioSettings
+                ) {
+                    return false;
+                }
+                if self.control.is_none() {
+                    self.control = control::ControlService::start(self.bus.clone());
+                }
+                if let Some(s) = &self.control {
+                    s.command(*c);
+                }
+                true
+            }
             // Handled by the app itself (they need the UI thread or the config path).
             Command::OpenUrl(_) | Command::OpenConfig | Command::Chime | Command::Reveal(_) => {
                 false
@@ -344,6 +379,9 @@ impl Services {
         }
         if let Some(s) = self.stats.take() {
             s.stop();
+        }
+        if let Some(c) = self.control.take() {
+            c.stop();
         }
         // Last: it flushes whatever the modules saved a moment ago.
         if let Some(s) = self.store.take() {

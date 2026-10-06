@@ -147,6 +147,34 @@ pub struct StatsSnapshot {
     pub power: Option<PowerStatus>,
 }
 
+/// A radio (Wi-Fi, Bluetooth) as the command centre sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Radio {
+    /// This PC has no such radio.
+    Unavailable,
+    /// Windows' "let apps control radios" privacy setting (or a policy) says no.
+    Denied,
+    /// The radio exists but is switched off in a way an app cannot change (a hardware switch,
+    /// airplane mode, the device disabled).
+    Disabled,
+    Off,
+    On,
+}
+
+/// The controls the command centre shows. A field is `None` when this PC (or this display) has no
+/// such control, so the page can say so instead of offering something that does nothing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ControlState {
+    /// Master output volume 0..=1 and whether it is muted.
+    pub volume: Option<(f32, bool)>,
+    /// Built-in panel brightness 0..=1.
+    pub brightness: Option<f32>,
+    pub wifi: Radio,
+    pub bluetooth: Radio,
+    /// Windows' do-not-disturb (focus assist) is on. Windows has no supported way to *change* it.
+    pub dnd: Option<bool>,
+}
+
 /// A value read back from the small persistent store (`None` = nothing saved under that key yet).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoreItem {
@@ -254,6 +282,8 @@ pub enum EventKind {
     DownloadDone(DownloadDone),
     /// A reading of the system's vital signs (answer to `StatsCmd::Sample`).
     Stats(Arc<StatsSnapshot>),
+    /// The command centre's controls, as read (answer to `ControlCmd::Refresh` and to changes).
+    Control(Arc<ControlState>),
 }
 
 /// Fieldless mirror of [`EventKind`], used for subscription masks.
@@ -279,10 +309,11 @@ pub enum Kind {
     Downloads,
     DownloadDone,
     Stats,
+    Control,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 19] = [
+    pub const ALL: [Kind; 20] = [
         Kind::ConfigChanged,
         Kind::ThemeChanged,
         Kind::Suspended,
@@ -302,6 +333,7 @@ impl Kind {
         Kind::Downloads,
         Kind::DownloadDone,
         Kind::Stats,
+        Kind::Control,
     ];
 }
 
@@ -327,6 +359,7 @@ impl EventKind {
             EventKind::Downloads(_) => Kind::Downloads,
             EventKind::DownloadDone(_) => Kind::DownloadDone,
             EventKind::Stats(_) => Kind::Stats,
+            EventKind::Control(_) => Kind::Control,
         }
     }
 }
@@ -420,6 +453,13 @@ mod tests {
                 path: "C:\\a.zip".into(),
                 bytes: 1,
             }),
+            EventKind::Control(Arc::new(ControlState {
+                volume: None,
+                brightness: None,
+                wifi: Radio::Unavailable,
+                bluetooth: Radio::Unavailable,
+                dnd: None,
+            })),
             EventKind::Stats(Arc::new(StatsSnapshot {
                 cpu: None,
                 mem_used: 0,
