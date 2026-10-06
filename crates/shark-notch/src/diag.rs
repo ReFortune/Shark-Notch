@@ -13,6 +13,7 @@ mod phone_probe;
 
 use std::fmt::Write as _;
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -38,7 +39,14 @@ use crate::win::{dragdrop, paths, textclip};
 struct Mark {
     t: f64,
     m: ProcMetrics,
+    /// CPU cycles the self-test's own heartbeat thread had used (see [`HEARTBEAT_CYCLES`]).
+    hb: u64,
 }
+
+/// Cycles used so far by the heartbeat thread, which only the self-test runs: it wakes about 66 times
+/// a second to look for stalls, and the app does not. The idle CPU figures leave it out (and print
+/// the whole-process number beside them) so they describe the app, not the test.
+static HEARTBEAT_CYCLES: AtomicU64 = AtomicU64::new(0);
 
 /// A watchdog thread that sleeps in short steps and notes every time it woke up much later than it
 /// asked: if *no* thread of this process ran for a while, the operating system (or the VM) stalled,
@@ -64,6 +72,7 @@ impl Heartbeat {
                     {
                         v.push((t0, dt));
                     }
+                    HEARTBEAT_CYCLES.store(sys::thread_cycles(), Ordering::Relaxed);
                 }
             });
         Heartbeat { stalls }
@@ -467,6 +476,7 @@ fn mark() -> Mark {
     Mark {
         t: clock::now(),
         m: sys::proc_metrics(),
+        hb: HEARTBEAT_CYCLES.load(Ordering::Relaxed),
     }
 }
 
@@ -562,14 +572,26 @@ fn unix_now() -> i64 {
         .map_or(0, |d| d.as_secs() as i64)
 }
 
-/// CPU use between two marks, as a percentage of one core: exact cycle counts when the system
-/// gives them, scheduler ticks otherwise.
-fn cpu_between(st: &SelfTest, b: &Mark, e: &Mark) -> f64 {
+/// CPU use of the whole process between two marks, as a percentage of one core: exact cycle counts
+/// when the system gives them, scheduler ticks otherwise.
+fn cpu_whole(st: &SelfTest, b: &Mark, e: &Mark) -> f64 {
     let secs = (e.t - b.t).max(1e-3);
     if st.cycles_hz > 1e6 && e.m.cycles > 0 {
         e.m.cycles.saturating_sub(b.m.cycles) as f64 / st.cycles_hz / secs * 100.0
     } else {
         (e.m.cpu_secs - b.m.cpu_secs) / secs * 100.0
+    }
+}
+
+/// The same, without the self-test's own heartbeat thread: what the *app* used.
+fn cpu_between(st: &SelfTest, b: &Mark, e: &Mark) -> f64 {
+    let secs = (e.t - b.t).max(1e-3);
+    let mine = e.hb.saturating_sub(b.hb) as f64;
+    if st.cycles_hz > 1e6 && e.m.cycles > 0 {
+        (e.m.cycles.saturating_sub(b.m.cycles) as f64 - mine).max(0.0) / st.cycles_hz / secs * 100.0
+    } else {
+        // Without cycle counts the thread cannot be taken out: the whole figure is all there is.
+        cpu_whole(st, b, e)
     }
 }
 
@@ -744,6 +766,8 @@ pub fn begin(a: &mut App) {
         a.opts.light_probe,
         a.cfg.general.exclude_from_capture && !a.opts.no_exclude
     ));
+    // The report lists every burst of the run, not only the last few.
+    a.recorder.set_max_reports(4096);
     a.selftest = Some(st);
     a.sched.set(T_SCRIPT, now + SCRIPT[0].0);
 }
@@ -839,16 +863,14 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
             let end = mark();
             if let Some(b) = st.idle_begin.take() {
                 let secs = (end.t - b.t).max(1e-3);
-                // Exact cycle count when available; the scheduler-tick figure is printed beside it.
+                // Exact cycle counts (the scheduler-tick figure is printed beside them); the app
+                // alone, and the whole process including the self-test's own heartbeat thread.
                 let tick_cpu = (end.m.cpu_secs - b.m.cpu_secs) / secs * 100.0;
-                let cpu = if st.cycles_hz > 1e6 && end.m.cycles > 0 {
-                    end.m.cycles.saturating_sub(b.m.cycles) as f64 / st.cycles_hz / secs * 100.0
-                } else {
-                    tick_cpu
-                };
+                let cpu = cpu_between(st, &b, &end);
+                let whole = cpu_whole(st, &b, &end);
                 let mib = sys::mib(end.m.private_ws);
                 let warm = matches!(act, Act::IdleEndWarm);
-                st.say(format!("idle ({}) over {secs:.1}s: cpu {cpu:.4}% (scheduler ticks: {tick_cpu:.2}%)  private WS {mib:.1} MiB  working set {:.1} MiB  commit {:.1} MiB", if warm { "GPU warm" } else { "GPU released" }, sys::mib(end.m.working_set), sys::mib(end.m.private_commit)));
+                st.say(format!("idle ({}) over {secs:.1}s: cpu {cpu:.4}% (whole process incl. the self-test's own heartbeat thread: {whole:.4}%; scheduler ticks: {tick_cpu:.2}%)  private WS {mib:.1} MiB  working set {:.1} MiB  commit {:.1} MiB", if warm { "GPU warm" } else { "GPU released" }, sys::mib(end.m.working_set), sys::mib(end.m.private_commit)));
                 if warm {
                     st.warm_idle = Some((cpu, mib))
                 } else {
@@ -1929,13 +1951,9 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
             ));
             if let Some(b) = st.stats_begin.take() {
                 let secs = (end.t - b.t).max(1e-3);
-                let cpu = if st.cycles_hz > 1e6 && end.m.cycles > 0 {
-                    end.m.cycles.saturating_sub(b.m.cycles) as f64 / st.cycles_hz / secs * 100.0
-                } else {
-                    (end.m.cpu_secs - b.m.cpu_secs) / secs * 100.0
-                };
+                let cpu = cpu_between(st, &b, &end);
                 st.say(format!(
-                    "stats: with the page open and sampling once a second this process used {cpu:.2}% of a core over {secs:.1} s (private working set {:.1} MiB before, {:.1} MiB after)",
+                    "stats: with the page open and sampling once a second the app used {cpu:.2}% of a core over {secs:.1} s (private working set {:.1} MiB before, {:.1} MiB after)",
                     sys::mib(b.m.private_ws),
                     sys::mib(end.m.private_ws)
                 ));
@@ -2242,7 +2260,7 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
                 let cpu = cpu_between(st, &b, &end);
                 let secs = end.t - b.t;
                 st.say(format!(
-                    "phone: listening with nobody connected and the page closed, {secs:.1} s: cpu {cpu:.4}%  private WS {:.1} MiB (a thread asleep in accept(); no timer, no polling)",
+                    "phone: listening with nobody connected and the page closed, {secs:.1} s: the app used {cpu:.4}% of a core  private WS {:.1} MiB (a thread asleep in accept(); no timer, no polling)",
                     sys::mib(end.m.private_ws)
                 ));
                 if cpu > 1.0 {
@@ -2368,16 +2386,25 @@ fn finish(a: &mut App, st: &mut SelfTest) {
     let _ = writeln!(report, "{}", a.recorder.format_all());
     let _ = writeln!(
         report,
-        "frames presented: {}  errors: {}  total hitches: {} (of which the frame itself was slow to draw: {})",
-        a.frames_presented,
-        a.present_errors,
-        a.recorder.total_hitches(),
-        a.recorder.total_app_hitches()
+        "frames presented: {}  errors: {}",
+        a.frames_presented, a.present_errors
+    );
+    let t = a.recorder.totals();
+    let _ = writeln!(
+        report,
+        "whole run: {} animation bursts, {} frames; {} hitches (frames over 1.5x the refresh interval): {} where the frame itself was slow to draw, {} late for another reason (presentation); longest interval {:.1} ms; longest a single frame took to build {:.1} ms",
+        t.bursts,
+        t.frames,
+        t.hitches,
+        t.app_hitches,
+        t.hitches - t.app_hitches,
+        t.worst_interval_ms,
+        t.worst_cpu_ms
     );
     if let (Some(w), Some(r)) = (st.warm_idle, st.released_idle) {
         let _ = writeln!(
             report,
-            "memory: private working set {:.1} MiB (GPU warm) -> {:.1} MiB (GPU released); idle CPU {:.4}% / {:.4}%",
+            "memory: private working set {:.1} MiB (GPU warm) -> {:.1} MiB (GPU released); idle CPU of the app {:.4}% / {:.4}%",
             w.1, r.1, w.0, r.0
         );
     }

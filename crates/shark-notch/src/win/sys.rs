@@ -216,6 +216,15 @@ pub fn proc_metrics() -> ProcMetrics {
     m
 }
 
+/// CPU cycles the calling thread has used so far (`QueryThreadCycleTime`).
+pub fn thread_cycles() -> u64 {
+    let mut c = 0u64;
+    unsafe {
+        let _ = QueryThreadCycleTime(GetCurrentThread(), &mut c);
+    }
+    c
+}
+
 /// How many process cycles pass per second of one fully busy core, measured by spinning this thread
 /// for ~25 ms against the QPC. Dividing a cycle delta by this (and the elapsed time) gives a CPU
 /// percentage with a resolution of a few microseconds instead of one scheduler tick.

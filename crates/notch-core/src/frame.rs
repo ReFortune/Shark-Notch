@@ -79,9 +79,26 @@ impl BurstReport {
     }
 }
 
+/// Counts over **every** burst since the recorder was made. The stored reports are bounded (the
+/// last few), these are not: a long session's hitches are never dropped from the total just because
+/// their burst has scrolled out of the list.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Totals {
+    pub bursts: usize,
+    pub frames: usize,
+    pub hitches: usize,
+    /// Of the hitches, the frames that were themselves slow to build (see
+    /// [`BurstReport::app_hitches`]).
+    pub app_hitches: usize,
+    /// The longest interval between two presented frames, in milliseconds.
+    pub worst_interval_ms: f64,
+    /// The longest a single frame took to build, in milliseconds.
+    pub worst_cpu_ms: f64,
+}
+
 /// Records frame intervals and per-frame CPU cost for the current burst and keeps the last few
 /// finished reports. Pre-allocated: `frame()` never allocates after the first burst.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct FrameRecorder {
     label: String,
     active: bool,
@@ -91,6 +108,14 @@ pub struct FrameRecorder {
     cpu: Vec<f32>,
     period: f64,
     done: Vec<BurstReport>,
+    max_reports: usize,
+    totals: Totals,
+}
+
+impl Default for FrameRecorder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 const MAX_REPORTS: usize = 16;
@@ -99,10 +124,28 @@ const MAX_FRAMES: usize = 4096;
 impl FrameRecorder {
     pub fn new() -> Self {
         Self {
+            label: String::new(),
+            active: false,
+            last: None,
+            first: 0.0,
             intervals: Vec::with_capacity(512),
             cpu: Vec::with_capacity(512),
-            ..Default::default()
+            period: 0.0,
+            done: Vec::new(),
+            max_reports: MAX_REPORTS,
+            totals: Totals::default(),
         }
+    }
+
+    /// Keep this many finished reports instead of the default few (the self-test keeps them all so
+    /// its report can list every burst). The [`Totals`] never depend on this.
+    pub fn set_max_reports(&mut self, n: usize) {
+        self.max_reports = n.max(1);
+    }
+
+    /// Counts over every burst so far.
+    pub fn totals(&self) -> Totals {
+        self.totals
     }
 
     pub fn is_active(&self) -> bool {
@@ -188,7 +231,14 @@ impl FrameRecorder {
             worst_cpu_ms: self.cpu.iter().cloned().fold(0.0f32, f32::max) as f64,
             avg_cpu_ms: self.cpu.iter().map(|&c| f64::from(c)).sum::<f64>() / self.cpu.len() as f64,
         };
-        if self.done.len() == MAX_REPORTS {
+        let t = &mut self.totals;
+        t.bursts += 1;
+        t.frames += rep.frames;
+        t.hitches += rep.hitches;
+        t.app_hitches += rep.app_hitches;
+        t.worst_interval_ms = t.worst_interval_ms.max(rep.max_ms);
+        t.worst_cpu_ms = t.worst_cpu_ms.max(rep.worst_cpu_ms);
+        while self.done.len() >= self.max_reports {
             self.done.remove(0);
         }
         self.done.push(rep.clone());
@@ -210,13 +260,14 @@ impl FrameRecorder {
             .join("\n")
     }
 
+    /// Hitches in every burst so far, not only the stored ones.
     pub fn total_hitches(&self) -> usize {
-        self.done.iter().map(|r| r.hitches).sum()
+        self.totals.hitches
     }
 
     /// Hitches whose frame was itself slow to build (see [`BurstReport::app_hitches`]).
     pub fn total_app_hitches(&self) -> usize {
-        self.done.iter().map(|r| r.app_hitches).sum()
+        self.totals.app_hitches
     }
 }
 
@@ -306,6 +357,46 @@ mod tests {
         );
         assert_eq!(r.total_hitches(), 2);
         assert_eq!(r.total_app_hitches(), 1);
+    }
+
+    #[test]
+    fn the_totals_count_every_burst_even_after_the_stored_reports_scrolled_away() {
+        let period = 1.0 / 60.0;
+        let mut r = FrameRecorder::new();
+        r.set_max_reports(3);
+        for b in 0..10 {
+            r.begin(&format!("b{b}"), 0.0, period);
+            // Four frames, one of them late and slow to draw (30 ms).
+            for (gap, cpu) in [
+                (period, 1.0),
+                (period * 3.0, 30.0),
+                (period, 1.0),
+                (period, 1.0),
+            ] {
+                let t = r.last.unwrap_or(0.0) + gap;
+                r.frame(t, cpu);
+            }
+            r.finish().unwrap();
+        }
+        assert_eq!(r.reports().len(), 3, "only the last three are kept");
+        assert_eq!(r.reports().first().unwrap().label, "b7");
+        let t = r.totals();
+        assert_eq!((t.bursts, t.hitches, t.app_hitches), (10, 10, 10));
+        assert_eq!(t.frames, 40);
+        assert!((t.worst_interval_ms - 50.0).abs() < 0.1, "{t:?}");
+        assert!((t.worst_cpu_ms - 30.0).abs() < 1e-3);
+        assert_eq!((r.total_hitches(), r.total_app_hitches()), (10, 10));
+        // A recorder asked to keep everything does.
+        let mut all = FrameRecorder::new();
+        all.set_max_reports(1000);
+        for b in 0..40 {
+            all.begin(&format!("b{b}"), 0.0, period);
+            all.frame(period, 1.0);
+            all.frame(period * 2.0, 1.0);
+            all.finish().unwrap();
+        }
+        assert_eq!(all.reports().len(), 40);
+        assert_eq!(FrameRecorder::default().totals(), Totals::default());
     }
 
     #[test]
