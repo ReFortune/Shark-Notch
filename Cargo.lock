@@ -266,7 +266,7 @@ version = "0.1.0"
 dependencies = [
  "notch-core",
  "windows",
- "windows-core",
+ "windows-numerics",
 ]
 
 [[package]]

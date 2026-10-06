@@ -459,6 +459,36 @@ impl Shell {
         }
     }
 
+    /// Hide *immediately*, without animating (fullscreen app, session lock, display off). Nothing
+    /// may start a GPU frame at the moment a game takes over the screen.
+    pub fn suspend_now(&mut self, now: f64) {
+        self.presence = Presence::Hidden;
+        self.peek = None;
+        self.sticky = false;
+        self.pointer_inside = false;
+        self.content_at = None;
+        self.shape_at = None;
+        self.prev_page = None;
+        self.content_kind = ContentKind::None;
+        self.retarget_shape();
+        self.content.set_target(0.0);
+        self.chip.set_target(0.0);
+        self.out_alpha.set_target(0.0);
+        self.snap_to_targets();
+        self.t_last = now;
+    }
+
+    /// Come back *immediately* as the collapsed pill (no slide-in).
+    pub fn resume_now(&mut self, now: f64) {
+        if self.presence != Presence::Hidden {
+            return;
+        }
+        self.presence = Presence::Collapsed;
+        self.retarget_shape();
+        self.snap_to_targets();
+        self.t_last = now;
+    }
+
     // ----- time -------------------------------------------------------------------------------
 
     /// Re-base the clock when going from idle to animating (see module docs).
@@ -962,6 +992,29 @@ mod tests {
         let f = s.frame();
         assert!(f.visible && f.presence == Presence::Collapsed);
         assert_eq!(f.y, 0.0);
+    }
+
+    #[test]
+    fn instant_suspend_and_resume_never_request_frames() {
+        let mut s = shell();
+        s.expand(0.0, Trigger::Hotkey);
+        s.step(0.1); // mid-animation when the game launches
+        assert!(s.animating());
+        s.suspend_now(0.1);
+        assert!(!s.animating(), "no animation, no frames");
+        let f = s.frame();
+        assert!(
+            !f.visible && f.presence == Presence::Hidden && f.content_kind == ContentKind::None
+        );
+        s.resume_now(5.0);
+        assert!(!s.animating());
+        let f = s.frame();
+        assert!(f.visible && f.presence == Presence::Collapsed);
+        assert_eq!((f.shape.w, f.shape.h, f.y), (112.0, 6.0, 0.0));
+        // Resume is a no-op unless actually hidden.
+        s.expand(6.0, Trigger::Hotkey);
+        s.resume_now(6.1);
+        assert_eq!(s.presence(), Presence::Expanded);
     }
 
     #[test]
