@@ -62,7 +62,7 @@ jobs:
         timeout-minutes: 4
         run: |
           $out = Join-Path $PWD "selftest.txt"
-          $p = Start-Process -FilePath ".\target\release\shark-notch.exe" -ArgumentList "--selftest","--out",$out -PassThru -Wait -NoNewWindow
+          $p = Start-Process -FilePath ".\target\release\shark-notch.exe" -ArgumentList "--selftest","--no-exclude","--light-probe","--out",$out -PassThru -Wait -NoNewWindow
           Write-Host "exit code: $($p.ExitCode)"
           if (Test-Path $out) { Get-Content $out } else { Write-Host "no selftest output produced" }
           exit $p.ExitCode

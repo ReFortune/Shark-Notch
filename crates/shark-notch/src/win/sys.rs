@@ -5,6 +5,7 @@ use std::ffi::c_void;
 
 use notch_core::color::Color;
 use windows::Win32::Foundation::{FILETIME, HANDLE, LPARAM, RECT};
+use windows::Win32::Globalization::{GetLocaleInfoEx, LOCALE_ITIME};
 use windows::Win32::Graphics::Dwm::DwmGetColorizationColor;
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
@@ -13,12 +14,14 @@ use windows::Win32::System::ProcessStatus::{
     GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX2,
 };
 use windows::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
-use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+use windows::Win32::System::SystemInformation::GetLocalTime;
+use windows::Win32::System::Threading::{GetCurrentProcess, GetCurrentThread, GetProcessTimes};
+use windows::Win32::System::WindowsProgramming::{QueryProcessCycleTime, QueryThreadCycleTime};
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
     SPI_GETCLIENTAREAANIMATION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
 };
-use windows::core::BOOL;
+use windows::core::{BOOL, PCWSTR};
 
 use super::util::{from_wide, wide};
 
@@ -163,8 +166,11 @@ pub struct ProcMetrics {
     pub private_ws: u64,
     pub working_set: u64,
     pub private_commit: u64,
-    /// Total CPU time (kernel + user) used by the process so far, seconds.
+    /// Total CPU time (kernel + user) used by the process so far, seconds. Advances in scheduler
+    /// ticks (~15.6 ms), so it cannot resolve a 0.01 % load over a few seconds; see `cycles`.
     pub cpu_secs: f64,
+    /// CPU cycles consumed by all threads so far (`QueryProcessCycleTime`): exact, tick-free.
+    pub cycles: u64,
 }
 
 fn filetime_secs(ft: FILETIME) -> f64 {
@@ -199,8 +205,30 @@ pub fn proc_metrics() -> ProcMetrics {
         if GetProcessTimes(me, &mut c0, &mut e0, &mut k, &mut u).is_ok() {
             m.cpu_secs = filetime_secs(k) + filetime_secs(u);
         }
+        let mut cycles = 0u64;
+        if QueryProcessCycleTime(me, &mut cycles).is_ok() {
+            m.cycles = cycles;
+        }
     }
     m
+}
+
+/// How many process cycles pass per second of one fully busy core, measured by spinning this thread
+/// for ~25 ms against the QPC. Dividing a cycle delta by this (and the elapsed time) gives a CPU
+/// percentage with a resolution of a few microseconds instead of one scheduler tick.
+pub fn cycles_per_sec() -> f64 {
+    unsafe {
+        let me = GetCurrentThread();
+        let (mut c0, mut c1) = (0u64, 0u64);
+        let t0 = crate::win::clock::now();
+        let _ = QueryThreadCycleTime(me, &mut c0);
+        while crate::win::clock::now() - t0 < 0.025 {
+            std::hint::spin_loop();
+        }
+        let _ = QueryThreadCycleTime(me, &mut c1);
+        let t1 = crate::win::clock::now();
+        c1.saturating_sub(c0) as f64 / (t1 - t0).max(1e-6)
+    }
 }
 
 /// Ask Windows to move this process's idle pages out of the working set. Cosmetic for "private bytes"
@@ -209,6 +237,26 @@ pub fn trim_working_set() {
     unsafe {
         let _ = windows::Win32::System::ProcessStatus::EmptyWorkingSet(GetCurrentProcess());
     }
+}
+
+/// The wall-clock time in the user's time zone (DST included; Windows does the conversion).
+pub fn local_time() -> notch_core::civil::LocalTime {
+    let t = unsafe { GetLocalTime() };
+    notch_core::civil::LocalTime::new(
+        i32::from(t.wYear),
+        u32::from(t.wMonth),
+        u32::from(t.wDay),
+        u32::from(t.wHour),
+        u32::from(t.wMinute),
+        u32::from(t.wSecond),
+    )
+}
+
+/// The regional preference for 24-hour time (`LOCALE_ITIME`: "0" = 12-hour, "1" = 24-hour).
+pub fn system_24h() -> bool {
+    let mut buf = [0u16; 4];
+    let n = unsafe { GetLocaleInfoEx(PCWSTR::null(), LOCALE_ITIME, Some(&mut buf)) };
+    n <= 0 || buf[0] != u16::from(b'0')
 }
 
 pub fn mib(bytes: u64) -> f64 {

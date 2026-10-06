@@ -107,26 +107,6 @@ pub fn draw_page(i: usize, cv: &mut Canvas, area: Rect) {
     }
 }
 
-/// Page indicator dots along the bottom of the expanded shape.
-pub fn draw_dots(cv: &mut Canvas, shape_rect: Rect, count: usize, active: usize) {
-    if count < 2 {
-        return;
-    }
-    let th = *cv.theme;
-    let gap = 11.0;
-    let total = gap * (count as f32 - 1.0);
-    let y = shape_rect.bottom() - 11.0;
-    let x0 = shape_rect.center().x - total * 0.5;
-    for k in 0..count {
-        let on = k == active;
-        cv.circle(
-            Vec2::new(x0 + k as f32 * gap, y),
-            if on { 2.6 } else { 2.0 },
-            if on { th.text } else { th.text_faint },
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

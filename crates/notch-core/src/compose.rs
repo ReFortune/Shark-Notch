@@ -52,6 +52,26 @@ pub fn content_rect(frame_y: f32, nominal: Size, window_w: f32, m: &Metrics) -> 
     )
 }
 
+/// Page indicator dots along the bottom of the expanded shape.
+pub fn draw_dots(cv: &mut Canvas, shape_rect: Rect, count: usize, active: usize) {
+    if count < 2 {
+        return;
+    }
+    let th = *cv.theme;
+    let gap = 11.0;
+    let total = gap * (count as f32 - 1.0);
+    let y = shape_rect.bottom() - 11.0;
+    let x0 = shape_rect.center().x - total * 0.5;
+    for k in 0..count {
+        let on = k == active;
+        cv.circle(
+            Vec2::new(x0 + k as f32 * gap, y),
+            if on { 2.6 } else { 2.0 },
+            if on { th.text } else { th.text_faint },
+        );
+    }
+}
+
 pub fn compose(
     frame: &ShellFrame,
     pages: &[Size],
@@ -76,9 +96,21 @@ pub fn compose(
         outline,
     });
 
-    // Everything below is clipped to the animated shape's body (inside the ears and corner radii).
+    // Content is clipped to the animated shape's body (inside the ears and corner radii) — but only
+    // while the shape is still smaller than the laid-out content. Once it has grown to the page's
+    // size the content cannot overflow (it has its own padding), and a rounded mask layer per frame
+    // is real GPU work we can skip.
     let clip = rect.inset(2.0);
     let radius = (shape.radius_bottom * 0.7).max(0.0);
+    let (mut lw, mut lh) = (frame.content_size.w, frame.content_size.h);
+    if let Some((p, a)) = frame.outgoing
+        && a > 0.01
+        && let Some(sz) = pages.get(p)
+    {
+        lw = lw.max(sz.w);
+        lh = lh.max(sz.h);
+    }
+    let needs_clip = shape.w < lw - 1.0 || shape.h < lh - 1.0;
 
     // Collapsed pill content (chips). Their alpha is already 0 unless the pill is collapsed.
     if frame.chip_alpha > 0.01 {
@@ -91,7 +123,9 @@ pub fn compose(
 
     match frame.content_kind {
         ContentKind::Page => {
-            cv.push_clip(clip, radius);
+            if needs_clip {
+                cv.push_clip(clip, radius);
+            }
             if let Some((page, alpha)) = frame.outgoing
                 && alpha > 0.01
                 && let Some(&size) = pages.get(page)
@@ -114,15 +148,19 @@ pub fn compose(
                         frame.content_size.w,
                         frame.content_size.h,
                     );
-                    crate::demo::draw_dots(&mut cv, nominal, content.page_count(), frame.page);
+                    draw_dots(&mut cv, nominal, content.page_count(), frame.page);
                     cv.pop_group();
                 }
             }
-            cv.pop_clip();
+            if needs_clip {
+                cv.pop_clip();
+            }
         }
         ContentKind::Peek { owner, size } => {
             if frame.content > 0.01 {
-                cv.push_clip(clip, radius);
+                if needs_clip {
+                    cv.push_clip(clip, radius);
+                }
                 let area = content_rect(
                     frame.y,
                     size,
@@ -135,10 +173,95 @@ pub fn compose(
                 cv.push_group(frame.content, 0.96 + 0.04 * frame.content, area.center());
                 content.draw_peek(owner, &mut cv, area);
                 cv.pop_group();
-                cv.pop_clip();
+                if needs_clip {
+                    cv.pop_clip();
+                }
             }
         }
         ContentKind::None => {}
+    }
+}
+
+/// Everything the first animation would otherwise have to create on the spot.
+///
+/// [`Warmup::run`] builds one display list per *kind* of frame the shell can show — every page, every
+/// peek banner and the collapsed chips — and hands each to a sink that renders it off-screen. That
+/// fills the platform's text-format, layout and icon-geometry caches and makes the GPU driver take
+/// its first-use paths while nobody is watching, so the first hover animates from the first frame
+/// ("pre-warm the first render"). Pages are drawn inside a shape slightly smaller than their content
+/// so the clip-layer path is exercised as well.
+pub struct Warmup<'a> {
+    pub pages: &'a [Size],
+    /// `(owner id, size)` of every module that has a peek banner.
+    pub peeks: &'a [(u32, Size)],
+    /// Width of the collapsed pill with chips (0 = no chips).
+    pub chips_width: f32,
+    pub theme: &'a Theme,
+    pub window_w: f32,
+    pub metrics: &'a Metrics,
+}
+
+impl Warmup<'_> {
+    /// Feed every warm-up list to `sink` (which returns `false` to stop early). Returns how many
+    /// lists were produced.
+    pub fn run(
+        &self,
+        base: &ShellFrame,
+        list: &mut DrawList,
+        content: &mut dyn Content,
+        mut sink: impl FnMut(&DrawList) -> bool,
+    ) -> usize {
+        let mut frame = *base;
+        frame.visible = true;
+        frame.y = 0.0;
+        frame.outgoing = None;
+        frame.peek_owner = None;
+        frame.chip_alpha = 0.0;
+        frame.content = 1.0;
+        let shrink = 0.92;
+        let mut n = 0;
+        let mut emit = |frame: &ShellFrame, list: &mut DrawList, content: &mut dyn Content| {
+            compose(
+                frame,
+                self.pages,
+                self.theme,
+                self.window_w,
+                self.metrics,
+                list,
+                content,
+            );
+            n += 1;
+            sink(list)
+        };
+
+        for (page, &size) in self.pages.iter().enumerate() {
+            frame.shape.w = size.w * shrink;
+            frame.shape.h = size.h * shrink;
+            frame.page = page;
+            frame.content_kind = ContentKind::Page;
+            frame.content_size = size;
+            if !emit(&frame, list, content) {
+                return n;
+            }
+        }
+        for &(owner, size) in self.peeks {
+            frame.shape.w = size.w * shrink;
+            frame.shape.h = size.h * shrink;
+            frame.peek_owner = Some(owner);
+            frame.content_kind = ContentKind::Peek { owner, size };
+            frame.content_size = size;
+            if !emit(&frame, list, content) {
+                return n;
+            }
+        }
+        if self.chips_width > 0.0 {
+            frame.shape.w = self.chips_width;
+            frame.content_kind = ContentKind::None;
+            frame.peek_owner = None;
+            frame.chip_alpha = 1.0;
+            emit(&frame, list, content);
+        }
+        n
     }
 }
 
@@ -282,6 +405,55 @@ mod tests {
         assert!(list.is_empty());
     }
 
+    fn count_clips(list: &DrawList) -> usize {
+        list.cmds
+            .iter()
+            .filter(|c| matches!(c, DrawCmd::PushClip { .. }))
+            .count()
+    }
+
+    #[test]
+    fn a_mask_is_only_used_while_the_shape_is_smaller_than_its_content() {
+        let mut s = shell();
+        s.expand(0.0, Trigger::Hotkey);
+        s.step(0.1); // still growing
+        let mut growing = DrawList::new();
+        compose(
+            &s.frame(),
+            &demo::page_sizes(),
+            &Theme::default(),
+            400.0,
+            &Metrics::default(),
+            &mut growing,
+            &mut Demo,
+        );
+        assert!(
+            count_clips(&growing) >= 1,
+            "needs the rounded mask while growing"
+        );
+        let mut t = 0.1;
+        while s.animating() {
+            t += 1.0 / 60.0;
+            s.step(t);
+        }
+        let mut settled = DrawList::new();
+        compose(
+            &s.frame(),
+            &demo::page_sizes(),
+            &Theme::default(),
+            400.0,
+            &Metrics::default(),
+            &mut settled,
+            &mut Demo,
+        );
+        assert_eq!(
+            count_clips(&settled),
+            0,
+            "no per-frame layer once the page fits"
+        );
+        assert!(settled.is_balanced());
+    }
+
     #[test]
     fn content_is_drawn_fading_out_during_a_collapse() {
         let mut s = shell();
@@ -352,5 +524,68 @@ mod tests {
                 .any(|c| matches!(c, DrawCmd::Text { text, .. } if text.as_str() == "peek"))
         );
         assert!(list.is_balanced());
+    }
+
+    #[test]
+    fn warmup_covers_every_page_peek_and_the_chips() {
+        let s = shell();
+        let pages = demo::page_sizes();
+        let peeks = [(0u32, Size::new(260.0, 44.0))];
+        let theme = Theme::default();
+        let m = Metrics::default();
+        let plan = Warmup {
+            pages: &pages,
+            peeks: &peeks,
+            chips_width: 90.0,
+            theme: &theme,
+            window_w: 400.0,
+            metrics: &m,
+        };
+        let mut list = DrawList::new();
+        let mut seen = Vec::new();
+        let n = plan.run(&s.frame(), &mut list, &mut Demo, |l| {
+            assert!(l.is_balanced(), "every warm-up list is well formed");
+            seen.push((l.cmds.len(), count_clips(l)));
+            true
+        });
+        assert_eq!(n, pages.len() + peeks.len() + 1);
+        assert_eq!(seen.len(), n);
+        assert!(
+            seen[..pages.len()]
+                .iter()
+                .all(|&(cmds, clips)| cmds > 3 && clips >= 1),
+            "pages draw content and exercise the clip layer"
+        );
+        assert!(
+            seen.last().is_some_and(|&(cmds, _)| cmds > 1),
+            "chips are drawn"
+        );
+    }
+
+    #[test]
+    fn warmup_stops_when_the_sink_says_so_and_skips_absent_parts() {
+        let s = shell();
+        let pages = demo::page_sizes();
+        let theme = Theme::default();
+        let m = Metrics::default();
+        let plan = Warmup {
+            pages: &pages,
+            peeks: &[],
+            chips_width: 0.0,
+            theme: &theme,
+            window_w: 400.0,
+            metrics: &m,
+        };
+        let mut list = DrawList::new();
+        assert_eq!(
+            plan.run(&s.frame(), &mut list, &mut Demo, |_| true),
+            pages.len(),
+            "no peeks, no chips"
+        );
+        assert_eq!(
+            plan.run(&s.frame(), &mut list, &mut Demo, |_| false),
+            1,
+            "stops after the first failure"
+        );
     }
 }

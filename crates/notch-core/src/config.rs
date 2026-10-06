@@ -137,6 +137,10 @@ pub struct Appearance {
     pub ear_size: f32,
     /// Extra UI scale on top of Windows' DPI scaling.
     pub scale: f32,
+    /// The window (and its swap chain) is sized once for this panel size, so pages never force a
+    /// rebuild. A module page larger than this is clipped.
+    pub max_panel_width: f32,
+    pub max_panel_height: f32,
 }
 
 impl Default for Appearance {
@@ -153,6 +157,8 @@ impl Default for Appearance {
             ears: true,
             ear_size: 12.0,
             scale: 1.0,
+            max_panel_width: 460.0,
+            max_panel_height: 340.0,
         }
     }
 }
@@ -227,6 +233,39 @@ impl Default for Fullscreen {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum HourFormat {
+    /// Follow the Windows regional setting.
+    #[default]
+    #[serde(rename = "system")]
+    System,
+    #[serde(rename = "12")]
+    H12,
+    #[serde(rename = "24")]
+    H24,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClockCfg {
+    pub enabled: bool,
+    /// `"system"`, `"12"` or `"24"`.
+    pub hour_format: HourFormat,
+    pub show_seconds: bool,
+    pub show_week: bool,
+}
+
+impl Default for ClockCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            hour_format: HourFormat::System,
+            show_seconds: false,
+            show_week: true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Modules {
@@ -253,6 +292,7 @@ pub struct Config {
     pub performance: Performance,
     pub fullscreen: Fullscreen,
     pub modules: Modules,
+    pub clock: ClockCfg,
 }
 
 /// Result of loading a config text.
@@ -375,6 +415,20 @@ impl Config {
             w,
         );
         clamp_f(&mut self.appearance.scale, 0.5, 2.0, "appearance.scale", w);
+        clamp_f(
+            &mut self.appearance.max_panel_width,
+            200.0,
+            1200.0,
+            "appearance.max_panel_width",
+            w,
+        );
+        clamp_f(
+            &mut self.appearance.max_panel_height,
+            100.0,
+            900.0,
+            "appearance.max_panel_height",
+            w,
+        );
         clamp_f(&mut self.animation.speed, 0.25, 4.0, "animation.speed", w);
         clamp_f(
             &mut self.animation.bounciness,
@@ -500,6 +554,8 @@ corner_smoothing = 0.6         # 0 = circular, 1 = fully continuous
 ears = true                    # concave fillets where the notch meets the screen edge
 ear_size = 12.0
 scale = 1.0                    # extra UI scale on top of Windows' DPI scaling
+max_panel_width = 460.0        # the window is sized once for this; larger module pages are clipped
+max_panel_height = 340.0
 
 [animation]
 reduce_motion = "system"       # system | on | off
@@ -521,7 +577,13 @@ show_missed_indicator = true
 peek_over_fullscreen = false
 
 [modules]
-order = ["clock"]
+order = ["clock"]              # page order; a module that is disabled in its own section is skipped
+
+[clock]
+enabled = true
+hour_format = "system"         # system | 12 | 24
+show_seconds = false           # also makes the clock page refresh every second while it is open
+show_week = true
 "##;
 
 #[cfg(test)]

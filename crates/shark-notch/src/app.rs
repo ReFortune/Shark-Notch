@@ -9,19 +9,24 @@ use std::cell::RefCell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 
+use notch_core::bus::{Bus, BusSender, Waker};
 use notch_core::color::Color;
-use notch_core::compose::{self, Content, Metrics};
+use notch_core::compose::{self, Metrics};
 use notch_core::config::{Config, FullscreenScope, Loaded, ReduceMotion, Style};
-use notch_core::demo;
-use notch_core::draw::{Canvas, CursorKind, DrawList, HitId, TextStyle};
+use notch_core::draw::{CursorKind, DrawList, HitId};
+use notch_core::events::{EventKind, Source};
 use notch_core::frame::{self, FrameRecorder};
 use notch_core::fullscreen::IRect;
 use notch_core::geom::{Rect, Size, Vec2};
 use notch_core::hover::{Cadence, HoverAction, HoverFsm, HoverParams};
+use notch_core::input::Input;
+use notch_core::module::{Command, Env, ModuleHost, ShellRequest};
+use notch_core::modules;
 use notch_core::raster;
 use notch_core::sched::{Scheduler, TimerId};
 use notch_core::shell::{Presence, Shell, ShellConfig, ShellFrame, Trigger};
 use notch_core::theme::Theme;
+use std::sync::Arc;
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, RECT, WAIT_OBJECT_0, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWM_TIMING_INFO, DwmGetCompositionTimingInfo};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -66,6 +71,8 @@ pub const T_HOVER: TimerId = TimerId(1);
 pub const T_GPU_RELEASE: TimerId = TimerId(2);
 pub const T_FS_RECHECK: TimerId = TimerId(3);
 pub const T_CFG_RELOAD: TimerId = TimerId(4);
+pub const T_MODULES: TimerId = TimerId(5);
+pub const T_REDRAW: TimerId = TimerId(6);
 pub const T_SCRIPT: TimerId = TimerId(9);
 
 /// `WM_MOUSELEAVE` (declared in commctrl.h, outside the feature set we link).
@@ -81,25 +88,12 @@ pub struct Options {
     pub console: bool,
 }
 
-/// Phase 1 content: placeholder pages that exercise the shell. Phase 2 replaces this with modules.
-pub struct DemoContent;
+/// Wakes the UI thread when a worker pushes an event onto the bus.
+struct WinWaker;
 
-impl Content for DemoContent {
-    fn draw_page(&mut self, page: usize, cv: &mut Canvas, area: Rect) {
-        demo::draw_page(page, cv, area);
-    }
-    fn draw_peek(&mut self, _owner: u32, cv: &mut Canvas, area: Rect) {
-        let th = *cv.theme;
-        cv.text(
-            area,
-            "Peek: the notch can show a brief banner",
-            TextStyle::label(),
-            th.text,
-        );
-    }
-    fn draw_chips(&mut self, _cv: &mut Canvas, _area: Rect) {}
-    fn page_count(&self) -> usize {
-        demo::PAGE_COUNT
+impl Waker for WinWaker {
+    fn wake(&self) {
+        inbox::wake();
     }
 }
 
@@ -117,7 +111,12 @@ pub struct App {
     pub(crate) list: DrawList,
     pub(crate) recorder: FrameRecorder,
     pub(crate) pages: Vec<Size>,
-    pub(crate) content: DemoContent,
+    pub(crate) host: ModuleHost,
+    bus: Bus,
+    pub(crate) bus_tx: BusSender,
+    /// The last view reported to the host: (expanded, ring page).
+    view: (bool, usize),
+    system_24h: bool,
     pub(crate) metrics: Metrics,
     pub(crate) layout: Layout,
     pub(crate) stage: Option<Stage>,
@@ -145,6 +144,7 @@ pub struct App {
     pub(crate) frames_presented: u64,
     pub(crate) present_errors: u64,
     pub(crate) last_warm_ms: f64,
+    pub(crate) last_prewarm_ms: f64,
     frame_block_until: f64,
 }
 
@@ -221,16 +221,27 @@ fn resolve_theme(cfg: &Config, system_dark: bool, system_accent: Color) -> Theme
     Theme::resolve(cfg.appearance.theme, system_dark, accent)
 }
 
-fn largest(pages: &[Size]) -> Size {
-    pages.iter().fold(Size::new(260.0, 56.0), |a, b| a.max(*b))
+/// Module page sizes limited to the fixed panel the window was sized for.
+fn clamp_pages(cfg: &Config, pages: Vec<Size>) -> Vec<Size> {
+    let max = Size::new(
+        cfg.appearance.max_panel_width,
+        cfg.appearance.max_panel_height,
+    );
+    pages
+        .into_iter()
+        .map(|p| Size::new(p.w.min(max.w), p.h.min(max.h)))
+        .collect()
 }
 
-fn make_layout(cfg: &Config, pages: &[Size]) -> Option<Layout> {
+fn make_layout(cfg: &Config) -> Option<Layout> {
     let mon = sys::select_monitor(&cfg.general.monitor)?;
     Some(Layout::new(
         mon,
         cfg.appearance.scale,
-        largest(pages),
+        Size::new(
+            cfg.appearance.max_panel_width,
+            cfg.appearance.max_panel_height,
+        ),
         Size::new(cfg.appearance.pill_width, cfg.appearance.pill_height),
     ))
 }
@@ -276,11 +287,13 @@ impl App {
             warn!("config: {w}");
         }
 
-        let pages = demo::page_sizes();
-        let layout = make_layout(&cfg, &pages).ok_or("no monitor available")?;
         let system_dark = sys::system_dark();
         let system_accent = sys::system_accent();
         let theme = resolve_theme(&cfg, system_dark, system_accent);
+        let host = ModuleHost::new(modules::registry(), Arc::new(cfg.clone()), theme);
+        let pages = clamp_pages(&cfg, host.pages());
+        let layout = make_layout(&cfg).ok_or("no monitor available")?;
+        let (bus, bus_tx) = Bus::new(Arc::new(WinWaker));
         let mut shell = Shell::new(shell_config(&cfg));
         shell.set_pages(pages.clone());
         shell.gesture_mut().reverse = cfg.animation.reverse_scroll;
@@ -299,7 +312,11 @@ impl App {
             list: DrawList::new(),
             recorder: FrameRecorder::new(),
             pages,
-            content: DemoContent,
+            host,
+            bus,
+            bus_tx,
+            view: (false, 0),
+            system_24h: sys::system_24h(),
             metrics: Metrics::default(),
             layout,
             stage: None,
@@ -329,6 +346,7 @@ impl App {
             frames_presented: 0,
             present_errors: 0,
             last_warm_ms: 0.0,
+            last_prewarm_ms: 0.0,
             frame_block_until: 0.0,
             cfg,
         };
@@ -469,6 +487,8 @@ impl App {
         };
         // Draw the current (collapsed) state first so the window never shows undefined pixels.
         let frame = self.shell.frame();
+        let env = self.env();
+        self.host.set_context(clock::now(), env);
         compose::compose(
             &frame,
             &self.pages,
@@ -476,12 +496,13 @@ impl App {
             self.layout.win_dip.w,
             &self.metrics,
             &mut self.list,
-            &mut self.content,
+            &mut self.host,
         );
         if let Err(e) = stage.draw(&self.list) {
             error!("first frame failed: {e}");
             return false;
         }
+        self.prewarm(&mut stage);
         if frame.visible {
             stage.show(self.layout.win_px);
         }
@@ -492,8 +513,9 @@ impl App {
         }
         self.last_warm_ms = (clock::now() - t0) * 1000.0;
         info!(
-            "GPU stack warm in {:.1} ms on '{}'{}",
+            "GPU stack warm in {:.1} ms (of which pre-warm {:.1} ms) on '{}'{}",
             self.last_warm_ms,
+            self.last_prewarm_ms,
             name,
             if warp {
                 " (WARP software renderer)"
@@ -502,6 +524,33 @@ impl App {
             }
         );
         true
+    }
+
+    /// Render every page, peek banner and the chips once into the not-yet-presented back buffer, so
+    /// the first real animation finds its text formats, layouts, icon geometry and layer resources
+    /// already built instead of creating them mid-expansion ("pre-warm the first render").
+    fn prewarm(&mut self, stage: &mut Stage) {
+        let t0 = clock::now();
+        let peeks: Vec<(u32, Size)> = self
+            .host
+            .module_ids()
+            .into_iter()
+            .filter_map(|id| Some((self.host.peek_owner(id)?, self.host.peek_size(id)?)))
+            .collect();
+        let plan = compose::Warmup {
+            pages: &self.pages,
+            peeks: &peeks,
+            chips_width: self.host.chips_width(),
+            theme: &self.theme,
+            window_w: self.layout.win_dip.w,
+            metrics: &self.metrics,
+        };
+        let base = self.shell.frame();
+        let n = plan.run(&base, &mut self.list, &mut self.host, |l| {
+            stage.render_only(l).is_ok()
+        });
+        self.last_prewarm_ms = (clock::now() - t0) * 1000.0;
+        debug!("pre-warmed {n} frames in {:.1} ms", self.last_prewarm_ms);
     }
 
     pub(crate) fn release_gpu(&mut self) {
@@ -529,8 +578,7 @@ impl App {
     }
 
     fn maybe_release_gpu(&mut self, now: f64) {
-        let idle =
-            self.shell.presence() == Presence::Collapsed && !self.shell.animating() && !self.burst;
+        let idle = self.shell.presence() == Presence::Collapsed && !self.animating() && !self.burst;
         if idle {
             self.release_gpu()
         } else {
@@ -607,8 +655,11 @@ impl App {
         } else {
             self.shell.step(t_start);
         }
+        self.sync_view();
         let frame = self.shell.frame();
         self.sync_window(&frame);
+        let env = self.env();
+        self.host.set_context(t_start, env);
         compose::compose(
             &frame,
             &self.pages,
@@ -616,7 +667,7 @@ impl App {
             self.layout.win_dip.w,
             &self.metrics,
             &mut self.list,
-            &mut self.content,
+            &mut self.host,
         );
         let result = self.stage.as_mut().map(|s| s.draw(&self.list));
         match result {
@@ -636,7 +687,7 @@ impl App {
             self.recorder
                 .frame(t_start, ((clock::now() - t_start) * 1000.0) as f32);
         }
-        if !self.shell.animating() {
+        if !self.animating() {
             self.end_burst();
         }
     }
@@ -739,8 +790,15 @@ impl App {
                 }
                 self.peek_over_fullscreen_if_needed();
                 let now = clock::now();
-                self.shell.peek(now, 0, Size::new(280.0, 56.0), 2.5);
-                self.kick("peek");
+                let target = self
+                    .host
+                    .page_ids()
+                    .into_iter()
+                    .find_map(|id| Some((self.host.peek_owner(id)?, self.host.peek_size(id)?)));
+                if let Some((owner, size)) = target {
+                    self.shell.peek(now, owner, size, 2.5);
+                    self.kick("peek");
+                }
             }
             hotkeys::ID_NEXT | hotkeys::ID_PREV if self.shell.presence() == Presence::Expanded => {
                 let n = self.shell.page_count().max(1);
@@ -768,9 +826,38 @@ impl App {
 
     fn on_wheel(&mut self, dx: f32, dy: f32) {
         let now = clock::now();
+        // A module with its own scrolling (lists, calendars) gets the wheel first.
+        if self.shell.presence() == Presence::Expanded {
+            let hit = self.hit_at(self.cursor);
+            self.host_ctx(now);
+            let consumed = self.host.input(
+                self.shell.page(),
+                hit,
+                &Input::Wheel {
+                    pos: self.cursor,
+                    dx,
+                    dy,
+                },
+            );
+            self.after_host();
+            if consumed {
+                return;
+            }
+        }
         if self.shell.scroll(now, dx, dy).is_some() {
             self.kick("switch");
         }
+    }
+
+    /// Forward a pointer event to the module that owns the visible page.
+    fn module_input(&mut self, input: Input) {
+        if self.shell.presence() != Presence::Expanded {
+            return;
+        }
+        let hit = self.hit_at(self.cursor);
+        self.host_ctx(clock::now());
+        self.host.input(self.shell.page(), hit, &input);
+        self.after_host();
     }
 
     fn hit_at(&self, p: Vec2) -> Option<HitId> {
@@ -779,6 +866,146 @@ impl App {
 
     fn on_click(&mut self, id: HitId) {
         debug!("click on region {}", id.0);
+    }
+
+    // ----- the module host ----------------------------------------------------------------------
+
+    fn env(&self) -> Env {
+        Env {
+            local: sys::local_time(),
+            system_24h: self.system_24h,
+        }
+    }
+
+    fn host_ctx(&mut self, now: f64) {
+        let env = self.env();
+        self.host.set_context(now, env);
+    }
+
+    /// True while frames are needed: the shell is moving, or a visible module animates continuously.
+    pub(crate) fn animating(&self) -> bool {
+        self.shell.animating()
+            || (self.shell.presence() == Presence::Expanded && self.host.wants_frames())
+    }
+
+    /// Report what is on screen to the host so it can load/unload modules and gate polling.
+    pub(crate) fn sync_view(&mut self) {
+        let expanded = self.shell.presence() == Presence::Expanded;
+        let key = (expanded, if expanded { self.shell.page() } else { 0 });
+        if key == self.view {
+            return;
+        }
+        self.view = key;
+        self.host_ctx(clock::now());
+        self.host.set_view(expanded.then_some(key.1));
+        self.after_host();
+    }
+
+    /// Keep the shell's page list and chip width in step with the modules.
+    fn refresh_pages(&mut self) {
+        let pages = clamp_pages(&self.cfg, self.host.pages());
+        if pages != self.pages {
+            self.pages = pages.clone();
+            self.shell.set_pages(pages);
+        }
+        self.shell
+            .set_chip_width(clock::now(), self.host.chips_width());
+    }
+
+    /// Execute what the host accumulated: commands, shell requests, redraws, crashed modules.
+    fn after_host(&mut self) {
+        for id in self.host.take_poisoned() {
+            error!("module '{id}' panicked and was disabled");
+            self.set_status(format!("module '{id}' crashed and was disabled"));
+        }
+        let out = self.host.take_out();
+        self.refresh_pages();
+        for c in out.commands {
+            self.exec(c);
+        }
+        let now = clock::now();
+        for r in out.shell {
+            if self.suspended() {
+                break;
+            }
+            match r {
+                ShellRequest::Peek { module, duration } => {
+                    if let (Some(owner), Some(size)) =
+                        (self.host.peek_owner(module), self.host.peek_size(module))
+                    {
+                        self.shell.peek(now, owner, size, duration);
+                        self.kick("peek");
+                    }
+                }
+                ShellRequest::Expand { module } => {
+                    if let Some(p) = self.host.page_of(module) {
+                        self.shell.set_page(now, p);
+                        self.expand(Trigger::Attention);
+                    }
+                }
+            }
+        }
+        if out.redraw {
+            self.redraw_once();
+        }
+        if let Some(t) = out.redraw_at {
+            self.sched.set_earliest(T_REDRAW, t);
+        }
+        match self.host.next_deadline() {
+            Some(t) => self.sched.set(T_MODULES, t),
+            None => self.sched.cancel(T_MODULES),
+        }
+    }
+
+    /// Draw one frame (no animation loop) because something visible changed.
+    fn redraw_once(&mut self) {
+        if self.suspended() {
+            return;
+        }
+        let nothing_to_show =
+            self.shell.presence() == Presence::Collapsed && self.host.chips_width() == 0.0;
+        if nothing_to_show {
+            return;
+        }
+        if self.stage.is_none() {
+            self.warm_gpu();
+        }
+        self.render_frame();
+    }
+
+    fn exec(&mut self, c: Command) {
+        match c {
+            Command::OpenUrl(url) => {
+                let u = url.trim();
+                if u.starts_with("https://") || u.starts_with("http://") {
+                    let w = wide(u);
+                    unsafe {
+                        ShellExecuteW(
+                            None,
+                            windows::core::w!("open"),
+                            PCWSTR(w.as_ptr()),
+                            PCWSTR::null(),
+                            PCWSTR::null(),
+                            SW_SHOWNORMAL,
+                        );
+                    }
+                } else {
+                    warn!("refused to open a non-http(s) URL");
+                }
+            }
+        }
+    }
+
+    /// Deliver queued bus events to the modules.
+    fn pump_bus(&mut self) {
+        let mut events = Vec::new();
+        self.bus.drain(&mut events);
+        if events.is_empty() {
+            return;
+        }
+        self.host_ctx(clock::now());
+        self.host.dispatch(events);
+        self.after_host();
     }
 
     // ----- hover sampling ---------------------------------------------------------------------
@@ -836,6 +1063,15 @@ impl App {
 
     pub(crate) fn apply_suspension(&mut self) {
         let now = clock::now();
+        let was_suspended_event = self.suspended();
+        self.bus_tx
+            .send(Source::Local, EventKind::Suspended(was_suspended_event));
+        self.host_ctx(now);
+        if was_suspended_event {
+            self.host.suspend();
+        } else {
+            self.host.resume();
+        }
         if self.suspended() {
             self.hover.reset();
             self.sched.cancel(T_HOVER);
@@ -907,6 +1143,7 @@ impl App {
         match msg {
             WM_MOUSEMOVE => {
                 self.cursor = self.layout.window_px_to_dip(x_of(lp.0), y_of(lp.0));
+                self.module_input(Input::Move(self.cursor));
                 if !self.tracking_leave
                     && let Some(stage) = &self.stage
                 {
@@ -923,10 +1160,12 @@ impl App {
             WM_MOUSELEAVE => {
                 self.tracking_leave = false;
                 self.cursor = Vec2::new(-1.0e4, -1.0e4);
+                self.module_input(Input::Leave);
             }
             WM_LBUTTONDOWN => {
                 self.cursor = self.layout.window_px_to_dip(x_of(lp.0), y_of(lp.0));
                 self.press = self.hit_at(self.cursor);
+                self.module_input(Input::Down(self.cursor));
                 if let Some(stage) = &self.stage {
                     unsafe {
                         SetCapture(stage.hwnd);
@@ -938,6 +1177,7 @@ impl App {
                 unsafe {
                     let _ = ReleaseCapture();
                 }
+                self.module_input(Input::Up(self.cursor));
                 let released_on = self.hit_at(self.cursor);
                 if let (Some(a), Some(b)) = (self.press.take(), released_on)
                     && a == b
@@ -1090,7 +1330,7 @@ impl App {
     }
 
     fn on_display_change(&mut self) {
-        let Some(new) = make_layout(&self.cfg, &self.pages) else {
+        let Some(new) = make_layout(&self.cfg) else {
             return;
         };
         let same = new.win_px == self.layout.win_px
@@ -1120,6 +1360,10 @@ impl App {
         if name == "ImmersiveColorSet" {
             self.refresh_theme();
         }
+        if name == "intl" {
+            self.system_24h = sys::system_24h();
+            self.redraw_once();
+        }
         if wp == 0x1043 {
             // SPI_SETCLIENTAREAANIMATION
             let cfg = shell_config(&self.cfg);
@@ -1136,6 +1380,8 @@ impl App {
         self.system_accent = sys::system_accent();
         self.theme = resolve_theme(&self.cfg, self.system_dark, self.system_accent);
         self.metrics.outline = self.theme.dark;
+        self.host.set_theme(self.theme);
+        self.bus_tx.send(Source::Local, EventKind::ThemeChanged);
         if self.stage.is_some() {
             self.render_frame();
         } else {
@@ -1210,6 +1456,11 @@ impl App {
         }
         self.theme = resolve_theme(&new, self.system_dark, self.system_accent);
         self.metrics.outline = self.theme.dark;
+        self.host.set_theme(self.theme);
+        self.host_ctx(clock::now());
+        self.host.apply_config(Arc::new(new.clone()));
+        self.bus_tx.send(Source::Local, EventKind::ConfigChanged);
+        self.refresh_pages();
         self.hover.set_params(hover_params(&new));
         self.shell.gesture_mut().reverse = new.animation.reverse_scroll;
         self.shell.set_config(shell_config(&new));
@@ -1217,8 +1468,10 @@ impl App {
         let geometry_changed = old.general.monitor != new.general.monitor
             || old.appearance.scale != new.appearance.scale
             || old.appearance.pill_width != new.appearance.pill_width
-            || old.appearance.pill_height != new.appearance.pill_height;
-        if geometry_changed && let Some(l) = make_layout(&new, &self.pages) {
+            || old.appearance.pill_height != new.appearance.pill_height
+            || old.appearance.max_panel_width != new.appearance.max_panel_width
+            || old.appearance.max_panel_height != new.appearance.max_panel_height;
+        if geometry_changed && let Some(l) = make_layout(&new) {
             self.layout = l;
             let had = self.stage.is_some();
             self.stage = None;
@@ -1236,6 +1489,7 @@ impl App {
     }
 
     fn drain_inbox(&mut self) {
+        self.pump_bus();
         for msg in inbox::drain() {
             match msg {
                 Msg::Config(Ok(l)) => self.apply_config(l),
@@ -1258,14 +1512,20 @@ impl App {
                 T_GPU_RELEASE => self.maybe_release_gpu(now),
                 T_FS_RECHECK => self.recheck_fullscreen(),
                 T_CFG_RELOAD => self.reload_config(),
+                T_MODULES => {
+                    self.host_ctx(now);
+                    self.host.tick();
+                    self.after_host();
+                }
+                T_REDRAW => self.redraw_once(),
                 T_SCRIPT => crate::diag::step(self, now),
                 _ => {}
             }
         }
         // Shell deadlines (peek expiry, staggered actions) when nothing is animating.
-        if !self.shell.animating() && self.shell.next_deadline().is_some_and(|d| d <= now) {
+        if !self.animating() && self.shell.next_deadline().is_some_and(|d| d <= now) {
             self.shell.step(now);
-            if self.shell.animating() {
+            if self.animating() {
                 self.kick("auto");
             }
         }
@@ -1283,7 +1543,7 @@ impl App {
         // The frame-latency handle is waited on ONLY while animating, which is what lets the loop
         // (and the process) sleep completely otherwise. After a failed frame it is skipped for a
         // moment: an unpresented swap chain keeps the handle signalled and would spin the CPU.
-        let animating = self.shell.animating();
+        let animating = self.animating();
         if animating
             && now >= self.frame_block_until
             && let Some(s) = &self.stage
@@ -1324,7 +1584,7 @@ impl App {
             Signal::None => {}
         }
         self.run_timers(now);
-        if self.shell.animating() && (self.stage.is_none() || now < self.frame_block_until) {
+        if self.animating() && (self.stage.is_none() || now < self.frame_block_until) {
             self.shell.step(now);
         }
     }

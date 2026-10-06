@@ -753,13 +753,10 @@ impl Renderer {
                     radiusY: r,
                 })?;
             let geom: ID2D1Geometry = rr.cast()?;
+            // Tight bounds matter: with "infinite" bounds the layer's temporary surface covers the
+            // whole render target on every push (expensive, especially on software rasterisers).
             let mut params = D2D1_LAYER_PARAMETERS1 {
-                contentBounds: D2D_RECT_F {
-                    left: -1.0e7,
-                    top: -1.0e7,
-                    right: 1.0e7,
-                    bottom: 1.0e7,
-                },
+                contentBounds: rect_f(rect.inflate(1.0, 1.0)),
                 geometricMask: ManuallyDrop::new(Some(geom)),
                 maskAntialiasMode: D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
                 maskTransform: self.cur_xform().to_d2d(),

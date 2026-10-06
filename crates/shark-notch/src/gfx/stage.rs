@@ -176,15 +176,33 @@ impl Stage {
     pub fn set_capture_exclusion(&mut self, on: bool) {
         self.exclude_from_capture = on;
         unsafe {
-            let _ = SetWindowDisplayAffinity(
+            if let Err(e) = SetWindowDisplayAffinity(
                 self.hwnd,
                 if on { WDA_EXCLUDEFROMCAPTURE } else { WDA_NONE },
-            );
+            ) {
+                crate::warn!("SetWindowDisplayAffinity failed (needs Windows 10 2004+): {e}");
+            }
         }
     }
 
     /// Draw `list` into the back buffer and present it (vsync-locked).
     pub fn draw(&mut self, list: &DrawList) -> Result<()> {
+        self.render(list)?;
+        // The very first frame is presented immediately so the window never shows undefined pixels.
+        let sync = if self.presented { 1 } else { 0 };
+        unsafe { self.swap.Present(sync, DXGI_PRESENT(0)).ok()? };
+        self.presented = true;
+        Ok(())
+    }
+
+    /// Draw without presenting. Used to warm every cache (text formats and layouts, icon geometry,
+    /// the driver's first-use paths) while the window is still hidden, so the first visible
+    /// animation does not pay for them.
+    pub fn render_only(&mut self, list: &DrawList) -> Result<()> {
+        self.render(list)
+    }
+
+    fn render(&mut self, list: &DrawList) -> Result<()> {
         unsafe {
             let surface: IDXGISurface = self.swap.GetBuffer(0)?;
             let props = D2D1_BITMAP_PROPERTIES1 {
@@ -213,10 +231,6 @@ impl Stage {
             dc.SetTarget(None);
             drawn?;
             ended?;
-            // The very first frame is presented immediately so the window never shows undefined pixels.
-            let sync = if self.presented { 1 } else { 0 };
-            self.swap.Present(sync, DXGI_PRESENT(0)).ok()?;
-            self.presented = true;
         }
         Ok(())
     }

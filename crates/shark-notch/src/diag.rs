@@ -11,7 +11,6 @@
 
 use std::fmt::Write as _;
 
-use notch_core::geom::Size;
 use notch_core::shell::Trigger;
 use windows::Win32::Foundation::COLORREF;
 use windows::Win32::Graphics::Gdi::{GetDC, GetPixel, ReleaseDC};
@@ -34,6 +33,8 @@ pub struct SelfTest {
     lines: Vec<String>,
     failures: Vec<String>,
     idle_begin: Option<Mark>,
+    /// Cycles per second of a busy core (calibrated), for tick-free CPU percentages.
+    cycles_hz: f64,
     warm_idle: Option<(f64, f64)>,     // (cpu %, private MiB)
     released_idle: Option<(f64, f64)>, // (cpu %, private MiB)
 }
@@ -125,6 +126,7 @@ pub fn begin(a: &mut App) {
         lines: Vec::new(),
         failures: Vec::new(),
         idle_begin: None,
+        cycles_hz: sys::cycles_per_sec(),
         warm_idle: None,
         released_idle: None,
     };
@@ -222,10 +224,16 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
             let end = mark();
             if let Some(b) = st.idle_begin.take() {
                 let secs = (end.t - b.t).max(1e-3);
-                let cpu = (end.m.cpu_secs - b.m.cpu_secs) / secs * 100.0;
+                // Exact cycle count when available; the scheduler-tick figure is printed beside it.
+                let tick_cpu = (end.m.cpu_secs - b.m.cpu_secs) / secs * 100.0;
+                let cpu = if st.cycles_hz > 1e6 && end.m.cycles > 0 {
+                    end.m.cycles.saturating_sub(b.m.cycles) as f64 / st.cycles_hz / secs * 100.0
+                } else {
+                    tick_cpu
+                };
                 let mib = sys::mib(end.m.private_ws);
                 let warm = matches!(act, Act::IdleEndWarm);
-                st.say(format!("idle ({}) over {secs:.1}s: cpu {cpu:.3}%  private WS {mib:.1} MiB  working set {:.1} MiB  commit {:.1} MiB", if warm { "GPU warm" } else { "GPU released" }, sys::mib(end.m.working_set), sys::mib(end.m.private_commit)));
+                st.say(format!("idle ({}) over {secs:.1}s: cpu {cpu:.4}% (scheduler ticks: {tick_cpu:.2}%)  private WS {mib:.1} MiB  working set {:.1} MiB  commit {:.1} MiB", if warm { "GPU warm" } else { "GPU released" }, sys::mib(end.m.working_set), sys::mib(end.m.private_commit)));
                 if warm {
                     st.warm_idle = Some((cpu, mib))
                 } else {
@@ -253,8 +261,15 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
         Act::ExpandHover => a.expand(Trigger::Hover),
         Act::Peek => {
             a.shell.collapse(now);
-            a.shell.peek(now, 0, Size::new(280.0, 56.0), 1.5);
-            a.kick("peek");
+            if let Some((owner, size)) = a
+                .host
+                .page_ids()
+                .into_iter()
+                .find_map(|id| Some((a.host.peek_owner(id)?, a.host.peek_size(id)?)))
+            {
+                a.shell.peek(now, owner, size, 1.5);
+                a.kick("peek");
+            }
         }
         Act::Report => finish(a, st),
     }
@@ -286,7 +301,7 @@ fn finish(a: &mut App, st: &mut SelfTest) {
     if let (Some(w), Some(r)) = (st.warm_idle, st.released_idle) {
         let _ = writeln!(
             report,
-            "memory: private working set {:.1} MiB (GPU warm) -> {:.1} MiB (GPU released); idle CPU {:.3}% / {:.3}%",
+            "memory: private working set {:.1} MiB (GPU warm) -> {:.1} MiB (GPU released); idle CPU {:.4}% / {:.4}%",
             w.1, r.1, w.0, r.0
         );
     }

@@ -1,0 +1,243 @@
+//! Small typed events. Every event carries a [`Source`] so the UI can treat a clipboard item from
+//! this PC and one from the iPhone — or a battery level from either device — identically.
+//!
+//! Payloads are deliberately tiny and cheap to clone (numbers, `Arc<str>`); bulky data such as
+//! album art or image thumbnails lives in platform caches and is referenced by id.
+
+use std::sync::Arc;
+use std::time::Instant;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Source {
+    /// Produced on this PC.
+    Local,
+    /// Produced by the iPhone (via the LAN listener).
+    Phone,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipKind {
+    Text,
+    Link,
+    Image,
+    Files,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ClipboardItem {
+    pub id: u64,
+    pub kind: ClipKind,
+    /// A short single-line preview (never the full content).
+    pub preview: Arc<str>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Notification {
+    pub id: u64,
+    pub app: Arc<str>,
+    pub title: Arc<str>,
+    pub body: Arc<str>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FileEntry {
+    pub id: u64,
+    pub name: Arc<str>,
+    pub path: Arc<str>,
+    pub size: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BatteryInfo {
+    /// 0..=100.
+    pub percent: u8,
+    pub charging: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FocusInfo {
+    /// e.g. "Work", "Sleep", "Do Not Disturb".
+    pub name: Arc<str>,
+    pub active: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct MediaSnapshot {
+    pub app: Arc<str>,
+    pub title: Arc<str>,
+    pub artist: Arc<str>,
+    pub album: Arc<str>,
+    pub playing: bool,
+    pub position_ms: u64,
+    pub duration_ms: u64,
+    /// Key into the platform's image store for the album art (0 = none).
+    pub art: u64,
+}
+
+/// What happened. Keep variants small; add payload types above rather than fields here.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EventKind {
+    /// The configuration was reloaded (modules re-read their section).
+    ConfigChanged,
+    /// Light/dark mode or accent colour changed.
+    ThemeChanged,
+    /// The shell stepped aside (`true`) or came back (`false`): fullscreen app, pause, lock, display off.
+    Suspended(bool),
+    ClipboardItem(ClipboardItem),
+    Notification(Notification),
+    FileDropped(Vec<FileEntry>),
+    /// Battery level of the device named by the event's source (`Phone` = "PhoneBattery").
+    Battery(BatteryInfo),
+    FocusChanged(FocusInfo),
+    MediaChanged(Arc<MediaSnapshot>),
+}
+
+/// Fieldless mirror of [`EventKind`], used for subscription masks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum Kind {
+    ConfigChanged,
+    ThemeChanged,
+    Suspended,
+    ClipboardItem,
+    Notification,
+    FileDropped,
+    Battery,
+    FocusChanged,
+    MediaChanged,
+}
+
+impl Kind {
+    pub const ALL: [Kind; 9] = [
+        Kind::ConfigChanged,
+        Kind::ThemeChanged,
+        Kind::Suspended,
+        Kind::ClipboardItem,
+        Kind::Notification,
+        Kind::FileDropped,
+        Kind::Battery,
+        Kind::FocusChanged,
+        Kind::MediaChanged,
+    ];
+}
+
+impl EventKind {
+    pub fn kind(&self) -> Kind {
+        match self {
+            EventKind::ConfigChanged => Kind::ConfigChanged,
+            EventKind::ThemeChanged => Kind::ThemeChanged,
+            EventKind::Suspended(_) => Kind::Suspended,
+            EventKind::ClipboardItem(_) => Kind::ClipboardItem,
+            EventKind::Notification(_) => Kind::Notification,
+            EventKind::FileDropped(_) => Kind::FileDropped,
+            EventKind::Battery(_) => Kind::Battery,
+            EventKind::FocusChanged(_) => Kind::FocusChanged,
+            EventKind::MediaChanged(_) => Kind::MediaChanged,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Event {
+    pub source: Source,
+    pub at: Instant,
+    pub kind: EventKind,
+}
+
+impl Event {
+    pub fn new(source: Source, kind: EventKind) -> Self {
+        Self {
+            source,
+            at: Instant::now(),
+            kind,
+        }
+    }
+}
+
+/// A set of event kinds a module wants to hear about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct EventMask(u32);
+
+impl EventMask {
+    pub const NONE: EventMask = EventMask(0);
+
+    pub fn of(kinds: &[Kind]) -> EventMask {
+        EventMask(kinds.iter().fold(0, |m, k| m | (1 << *k as u8)))
+    }
+
+    pub fn contains(self, k: Kind) -> bool {
+        self.0 & (1 << k as u8) != 0
+    }
+
+    pub fn union(self, o: EventMask) -> EventMask {
+        EventMask(self.0 | o.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn samples() -> Vec<EventKind> {
+        vec![
+            EventKind::ConfigChanged,
+            EventKind::ThemeChanged,
+            EventKind::Suspended(true),
+            EventKind::ClipboardItem(ClipboardItem {
+                id: 1,
+                kind: ClipKind::Text,
+                preview: "x".into(),
+            }),
+            EventKind::Notification(Notification {
+                id: 1,
+                app: "a".into(),
+                title: "t".into(),
+                body: "b".into(),
+            }),
+            EventKind::FileDropped(vec![]),
+            EventKind::Battery(BatteryInfo {
+                percent: 50,
+                charging: false,
+            }),
+            EventKind::FocusChanged(FocusInfo {
+                name: "Work".into(),
+                active: true,
+            }),
+            EventKind::MediaChanged(Arc::new(MediaSnapshot::default())),
+        ]
+    }
+
+    #[test]
+    fn every_event_maps_to_a_distinct_kind() {
+        let kinds: Vec<Kind> = samples().iter().map(EventKind::kind).collect();
+        assert_eq!(kinds.len(), Kind::ALL.len());
+        for k in Kind::ALL {
+            assert_eq!(kinds.iter().filter(|x| **x == k).count(), 1, "{k:?}");
+        }
+    }
+
+    #[test]
+    fn masks_select_exactly_what_was_asked_for() {
+        let m = EventMask::of(&[Kind::Battery, Kind::Notification]);
+        assert!(m.contains(Kind::Battery) && m.contains(Kind::Notification));
+        assert!(!m.contains(Kind::MediaChanged));
+        assert!(!EventMask::NONE.contains(Kind::Battery));
+        let u = m.union(EventMask::of(&[Kind::MediaChanged]));
+        assert!(u.contains(Kind::MediaChanged) && u.contains(Kind::Battery));
+    }
+
+    #[test]
+    fn local_and_phone_events_differ_only_by_source() {
+        let kind = EventKind::Battery(BatteryInfo {
+            percent: 80,
+            charging: true,
+        });
+        let a = Event::new(Source::Local, kind.clone());
+        let b = Event::new(Source::Phone, kind);
+        assert_ne!(a.source, b.source);
+        assert_eq!(
+            a.kind, b.kind,
+            "same payload type, rendered by the same code"
+        );
+    }
+}

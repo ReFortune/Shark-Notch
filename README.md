@@ -50,8 +50,9 @@ Useful command-line switches:
 The platform-independent core builds and tests anywhere:
 
 ```bash
-cargo test -p notch-core                 # ~110 tests: springs, shell, hover, config, protocol...
-cargo run -p notch-preview -- shell out/shell.png   # render the shell's choreography to a PNG
+cargo test -p notch-core                 # 150+ tests: springs, shell, hover, config, bus, module host...
+cargo run -p notch-preview -- shell out/shell.png     # render the shell's choreography to a PNG
+cargo run -p notch-preview -- modules out/modules.png # ...or the real module host (chips, pages, peek)
 cargo check --target x86_64-pc-windows-msvc -p shark-notch   # type-check the Windows app
 ```
 
@@ -87,7 +88,7 @@ locked, display-off or a fullscreen app is foreground.
 | # | Phase | State |
 |--:|-------|-------|
 | 1 | Shell (window, springs, hover/hotkey, tray, fullscreen, config) | implemented — see `docs/PERFORMANCE.md` |
-| 2 | Event bus + `Module` trait + clock module | planned |
+| 2 | Event bus + `Module` trait + clock module | implemented |
 | 3 | Media | planned |
 | 4 | Clipboard history | planned |
 | 5 | File shelf | planned |
