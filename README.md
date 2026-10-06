@@ -90,8 +90,8 @@ locked, display-off or a fullscreen app is foreground.
 | 1 | Shell (window, springs, hover/hotkey, tray, fullscreen, config) | implemented — see `docs/PERFORMANCE.md` |
 | 2 | Event bus + `Module` trait + clock module | implemented |
 | 3 | Media (SMTC, album art, controls, seek, visualizer) | implemented — needs your hardware for the live SMTC check |
-| 4 | Clipboard history | planned |
-| 5 | File shelf | planned |
+| 4 | Clipboard history (text, links, images; pin; re-copy) | implemented |
+| 5 | File shelf (OLE drop target, drag out) | implemented — real drag-and-drop needs your hardware |
 | 6 | Windows notifications | planned |
 | 7 | Calendar + Pomodoro | planned |
 | 8 | Live activities | planned |

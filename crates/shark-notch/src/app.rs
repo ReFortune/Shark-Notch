@@ -21,7 +21,7 @@ use notch_core::geom::{Rect, Size, Vec2};
 use notch_core::hover::{Cadence, HoverAction, HoverFsm, HoverParams};
 use notch_core::image::ImageCache;
 use notch_core::input::Input;
-use notch_core::module::{Audio, Command, Env, ModuleHost, ShellRequest};
+use notch_core::module::{Audio, Command, Env, ModuleHost, ShelfCmd, ShellRequest};
 use notch_core::modules;
 use notch_core::raster;
 use notch_core::sched::{Scheduler, TimerId};
@@ -53,6 +53,7 @@ use crate::services::Services;
 use crate::win::autostart;
 use crate::win::cfgwatch::ConfigWatch;
 use crate::win::clock;
+use crate::win::dragdrop;
 use crate::win::fullscreen::{self, Watcher};
 use crate::win::hotkeys::{self, Hotkeys};
 use crate::win::inbox::{self, Msg, WM_APP_WAKE};
@@ -126,6 +127,12 @@ pub struct App {
     /// Bus events delivered so far, per kind, and the last clipboard item (self-test evidence).
     pub(crate) bus_counts: [u32; Kind::ALL.len()],
     pub(crate) last_clip: Option<notch_core::events::ClipboardItem>,
+    pub(crate) last_files: Option<Vec<notch_core::events::FileEntry>>,
+    /// The notch's OLE drop target (registered on every stage window while the shelf is active).
+    pub(crate) drop_target: Option<windows::Win32::System::Ole::IDropTarget>,
+    /// Files the shelf asked to drag out; OLE's modal loop runs from the main loop, outside any borrow.
+    pending_drag: Option<Vec<Arc<str>>>,
+    press_pos: Option<Vec2>,
     /// The last view reported to the host: (expanded, ring page).
     view: (bool, usize),
     system_24h: bool,
@@ -344,6 +351,10 @@ impl App {
             services,
             bus_counts: [0; Kind::ALL.len()],
             last_clip: None,
+            last_files: None,
+            drop_target: None,
+            pending_drag: None,
+            press_pos: None,
             view: (false, 0),
             system_24h: sys::system_24h(),
             metrics: Metrics::default(),
@@ -427,6 +438,10 @@ impl App {
         }
 
         self.services.sync(&self.cfg);
+        self.drop_target = Some(dragdrop::new_target(
+            self.bus_tx.clone(),
+            self.services.shelf_slot(),
+        ));
 
         // Pre-warm the first render so the very first hover animates immediately, then let the idle
         // timer release the GPU again if it is not used.
@@ -518,6 +533,9 @@ impl App {
                 return false;
             }
         };
+        if let Some(t) = &self.drop_target {
+            dragdrop::register(stage.hwnd, t);
+        }
         // Draw the current (collapsed) state first so the window never shows undefined pixels.
         let frame = self.shell.frame();
         let env = self.env();
@@ -570,7 +588,11 @@ impl App {
             .into_iter()
             .filter_map(|id| Some((self.host.peek_owner(id)?, self.host.peek_size(id)?)))
             .collect();
+        // A 2x2 image so the bitmap-brush path is exercised too; removed again right after.
+        let warm_image =
+            notch_core::image::ImageData::new(2, 2, vec![128; 16]).and_then(|d| self.images.put(d));
         let plan = compose::Warmup {
+            image: warm_image,
             pages: &self.pages,
             peeks: &peeks,
             chips_width: self.host.chips_width(),
@@ -582,6 +604,9 @@ impl App {
         let n = plan.run(&base, &mut self.list, &mut self.host, |l| {
             stage.render_only(l).is_ok()
         });
+        if let Some(id) = warm_image {
+            self.images.remove(id);
+        }
         self.last_prewarm_ms = (clock::now() - t0) * 1000.0;
         debug!("pre-warmed {n} frames in {:.1} ms", self.last_prewarm_ms);
     }
@@ -724,11 +749,11 @@ impl App {
         if self.burst {
             let total_ms = ((clock::now() - t_start) * 1000.0) as f32;
             self.recorder.frame(t_start, total_ms);
-            // A frame that cost more than a whole refresh period is what makes a hitch: say where the
-            // time went (the first few per run; a flood would be noise).
+            // A frame that cost more than two refresh periods is a real hitch: say where the time
+            // went (the first few per run; a flood would be noise).
             if let Some(t) = times
-                && f64::from(total_ms) > self.period * 1000.0
-                && self.slow_frames_logged < 12
+                && f64::from(total_ms) > 2.2 * self.period * 1000.0
+                && self.slow_frames_logged < 30
             {
                 self.slow_frames_logged += 1;
                 warn!(
@@ -923,10 +948,15 @@ impl App {
 
     /// Forward a pointer event to the module that owns the visible page.
     fn module_input(&mut self, input: Input) {
+        let hit = self.hit_at(self.cursor);
+        self.module_input_hit(input, hit);
+    }
+
+    /// Like `module_input`, with an explicit region (a drag reports where the press began).
+    fn module_input_hit(&mut self, input: Input, hit: Option<HitId>) {
         if self.shell.presence() != Presence::Expanded {
             return;
         }
-        let hit = self.hit_at(self.cursor);
         self.host_ctx(clock::now());
         self.host.input(self.shell.page(), hit, &input);
         self.after_host();
@@ -934,6 +964,41 @@ impl App {
 
     fn hit_at(&self, p: Vec2) -> Option<HitId> {
         self.list.hit_test(p).map(|h| h.id)
+    }
+
+    /// Take the drag-out the shelf asked for (the main loop runs it outside any borrow of the app).
+    pub(crate) fn take_pending_drag(&mut self) -> Option<Vec<String>> {
+        self.pending_drag
+            .take()
+            .map(|v| v.iter().map(|p| p.to_string()).collect())
+    }
+
+    /// Before OLE's modal drag loop: release our own mouse capture and let the mouse fall through
+    /// the notch, so the drop can land on whatever window is underneath it.
+    pub(crate) fn before_drag(&mut self) {
+        unsafe {
+            let _ = ReleaseCapture();
+        }
+        if let Some(stage) = self.stage.as_mut() {
+            stage.set_click_through(true);
+            stage.set_hit_region(None);
+        }
+        self.press = None;
+        self.press_pos = None;
+        self.hover.reset();
+    }
+
+    /// After the drag loop returned: resynchronise the window state and the pointer bookkeeping.
+    pub(crate) fn after_drag(&mut self, accepted: bool) {
+        debug!("shelf drag-out finished (accepted: {accepted})");
+        self.press = None;
+        self.press_pos = None;
+        self.tracking_leave = false;
+        self.last_interactive = false; // forces `sync_window` to reapply click-through and the hit region
+        if self.stage.is_some() {
+            self.render_frame();
+        }
+        self.start_sampling();
     }
 
     /// A press and release on the same region: tell the module that owns the page.
@@ -1061,7 +1126,13 @@ impl App {
 
     fn exec(&mut self, c: Command) {
         match c {
-            Command::Media(_) | Command::Clipboard(_) => {
+            Command::Shelf(ShelfCmd::DragOut(paths)) => {
+                // OLE's drag loop is modal: run it from the main loop, not from inside a message handler.
+                if !paths.is_empty() {
+                    self.pending_drag = Some(paths);
+                }
+            }
+            Command::Media(_) | Command::Clipboard(_) | Command::Shelf(_) => {
                 self.services.command(&c);
             }
             Command::OpenUrl(url) => {
@@ -1094,8 +1165,10 @@ impl App {
         }
         for ev in &events {
             self.bus_counts[ev.kind.kind() as usize] += 1;
-            if let EventKind::ClipboardItem(it) = &ev.kind {
-                self.last_clip = Some(it.clone());
+            match &ev.kind {
+                EventKind::ClipboardItem(it) => self.last_clip = Some(it.clone()),
+                EventKind::FileDropped(f) => self.last_files = Some(f.clone()),
+                _ => {}
             }
         }
         self.host_ctx(clock::now());
@@ -1140,8 +1213,16 @@ impl App {
                 }
             }
             HoverAction::ArmDrag => {
-                debug!("drag toward the top detected (file shelf arrives in phase 5)");
+                debug!("a drag toward the top of the screen was detected");
                 self.warm_gpu();
+                if self.cfg.shelf.open_on_drag
+                    && self.cfg.module_active("shelf")
+                    && !self.suspended()
+                    && let Some(p) = self.host.page_of("shelf")
+                {
+                    self.shell.set_page(now, p);
+                    self.expand(Trigger::Drag);
+                }
             }
             HoverAction::DisarmDrag => {}
         }
@@ -1239,7 +1320,15 @@ impl App {
         match msg {
             WM_MOUSEMOVE => {
                 self.cursor = self.layout.window_px_to_dip(x_of(lp.0), y_of(lp.0));
-                self.module_input(Input::Move(self.cursor));
+                // Button held since a press: a drag (the module gets the region the press began on).
+                const MK_LBUTTON: usize = 0x0001;
+                match self.press_pos {
+                    Some(start) if wp.0 & MK_LBUTTON != 0 => {
+                        let (pos, hit) = (self.cursor, self.press);
+                        self.module_input_hit(Input::Drag { start, pos }, hit);
+                    }
+                    _ => self.module_input(Input::Move(self.cursor)),
+                }
                 if !self.tracking_leave
                     && let Some(stage) = &self.stage
                 {
@@ -1261,6 +1350,7 @@ impl App {
             WM_LBUTTONDOWN => {
                 self.cursor = self.layout.window_px_to_dip(x_of(lp.0), y_of(lp.0));
                 self.press = self.hit_at(self.cursor);
+                self.press_pos = Some(self.cursor);
                 self.module_input(Input::Down(self.cursor));
                 if let Some(stage) = &self.stage {
                     unsafe {
@@ -1274,6 +1364,7 @@ impl App {
                     let _ = ReleaseCapture();
                 }
                 self.module_input(Input::Up(self.cursor));
+                self.press_pos = None;
                 let released_on = self.hit_at(self.cursor);
                 if let (Some(a), Some(b)) = (self.press.take(), released_on)
                     && a == b
@@ -1704,6 +1795,16 @@ enum Signal {
 // ----- entry point ------------------------------------------------------------------------------
 
 pub fn run(opts: Options) -> i32 {
+    // OLE (a single-threaded apartment) is needed for the shelf's drag and drop.
+    let ole = unsafe { windows::Win32::System::Ole::OleInitialize(None) }.is_ok();
+    let code = run_inner(opts);
+    if ole {
+        unsafe { windows::Win32::System::Ole::OleUninitialize() };
+    }
+    code
+}
+
+fn run_inner(opts: Options) -> i32 {
     let ctrl = match create_controller() {
         Ok(h) => h,
         Err(e) => {
@@ -1761,6 +1862,13 @@ pub fn run(opts: Options) -> i32 {
         guard_unit(|| {
             with_app(|a| a.after_wait(signal));
         });
+        // A drag-out requested by the shelf: OLE runs its own modal loop, so do it here, between
+        // iterations, with no borrow of the app held (window procedures may then re-enter normally).
+        if let Some(paths) = with_app(|a| a.take_pending_drag()).flatten() {
+            with_app(|a| a.before_drag());
+            let accepted = dragdrop::start_drag(&paths);
+            with_app(|a| a.after_drag(accepted));
+        }
         if let Some(code) = with_app(|a| {
             a.selftest
                 .as_ref()

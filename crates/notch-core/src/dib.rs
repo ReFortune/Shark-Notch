@@ -74,7 +74,10 @@ pub fn dib_from_bgra(w: u32, h: u32, bgra_premultiplied: &[u8]) -> Option<Vec<u8
     out.extend_from_slice(&(image as u32).to_le_bytes());
     out.extend_from_slice(&[0u8; 16]); // resolution, colours used/important
     for y in (0..hu).rev() {
-        for px in bgra_premultiplied[y * wu * 4..(y + 1) * wu * 4].chunks_exact(4) {
+        for px in bgra_premultiplied[y * wu * 4..(y + 1) * wu * 4]
+            .as_chunks::<4>()
+            .0
+        {
             let white = 255 - px[3];
             out.extend_from_slice(&[
                 px[0].saturating_add(white),

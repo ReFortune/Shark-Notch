@@ -395,8 +395,7 @@ mod tests {
         use std::sync::Arc;
         // Only the clock: the other built-in pages are switched off for this test.
         let mut only_clock = Config::default();
-        only_clock.media.enabled = false;
-        only_clock.clipboard.enabled = false;
+        only_clock.modules.order = vec!["clock".into()];
         let host_cfg = Arc::new(only_clock);
         let mut h = ModuleHost::new(crate::modules::registry(), host_cfg, Theme::default());
         assert_eq!(h.page_ids(), vec!["clock"]);

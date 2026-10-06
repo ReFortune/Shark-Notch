@@ -5,16 +5,19 @@
 //! A service exists only while its module is active in the configuration (`Config::module_active`),
 //! so a disabled module costs nothing: no thread, no subscription, no loaded WinRT.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use notch_core::bus::BusSender;
 use notch_core::config::Config;
 use notch_core::image::ImageCache;
 use notch_core::module::Command;
 
+use crate::win::dragdrop::ShelfSlot;
+
 pub mod audio;
 pub mod clipboard;
 pub mod media;
+pub mod shelf;
 
 pub struct Services {
     bus: BusSender,
@@ -22,6 +25,9 @@ pub struct Services {
     pub audio: audio::AudioMeter,
     media: Option<media::MediaService>,
     clipboard: Option<clipboard::ClipboardService>,
+    shelf: Option<shelf::ShelfService>,
+    /// The shelf worker's inbox, shared with the OLE drop target (empty while the shelf is off).
+    shelf_slot: ShelfSlot,
     suspended: bool,
 }
 
@@ -33,6 +39,8 @@ impl Services {
             audio: audio::AudioMeter::new(),
             media: None,
             clipboard: None,
+            shelf: None,
+            shelf_slot: Arc::new(Mutex::new(None)),
             suspended: false,
         }
     }
@@ -83,6 +91,31 @@ impl Services {
             }
             (false, false) => {}
         }
+
+        let want_shelf = cfg.module_active("shelf");
+        match (want_shelf, self.shelf.is_some()) {
+            (true, false) => {
+                self.shelf = shelf::ShelfService::start(
+                    self.bus.clone(),
+                    self.images.clone(),
+                    &self.shelf_slot,
+                );
+            }
+            (false, true) => {
+                if let Some(s) = self.shelf.take() {
+                    s.stop(&self.shelf_slot);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn shelf_slot(&self) -> ShelfSlot {
+        self.shelf_slot.clone()
+    }
+
+    pub fn shelf(&self) -> Option<&shelf::ShelfService> {
+        self.shelf.as_ref()
     }
 
     /// The clipboard service, if its module is active (the iPhone listener adds items through it).
@@ -103,6 +136,12 @@ impl Services {
             Command::Clipboard(c) => {
                 if let Some(s) = &self.clipboard {
                     s.command(*c);
+                }
+                true
+            }
+            Command::Shelf(c) => {
+                if let Some(s) = &self.shelf {
+                    s.command(c);
                 }
                 true
             }
@@ -131,6 +170,9 @@ impl Services {
         }
         if let Some(c) = self.clipboard.take() {
             c.stop();
+        }
+        if let Some(s) = self.shelf.take() {
+            s.stop(&self.shelf_slot);
         }
     }
 }

@@ -48,6 +48,9 @@ pub struct FileEntry {
     pub name: Arc<str>,
     pub path: Arc<str>,
     pub size: u64,
+    /// Key into the image cache of a thumbnail or file-type icon (0 = none).
+    pub thumb: u64,
+    pub is_dir: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,6 +122,8 @@ pub enum EventKind {
     ClipboardRemoved(u64),
     Notification(Notification),
     FileDropped(Vec<FileEntry>),
+    /// Something is being dragged over the notch's drop target (`true`), or left / was dropped (`false`).
+    DragHover(bool),
     /// Battery level of the device named by the event's source (`Phone` = "PhoneBattery").
     Battery(BatteryInfo),
     FocusChanged(FocusInfo),
@@ -136,13 +141,14 @@ pub enum Kind {
     ClipboardRemoved,
     Notification,
     FileDropped,
+    DragHover,
     Battery,
     FocusChanged,
     MediaChanged,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 10] = [
+    pub const ALL: [Kind; 11] = [
         Kind::ConfigChanged,
         Kind::ThemeChanged,
         Kind::Suspended,
@@ -150,6 +156,7 @@ impl Kind {
         Kind::ClipboardRemoved,
         Kind::Notification,
         Kind::FileDropped,
+        Kind::DragHover,
         Kind::Battery,
         Kind::FocusChanged,
         Kind::MediaChanged,
@@ -166,6 +173,7 @@ impl EventKind {
             EventKind::ClipboardRemoved(_) => Kind::ClipboardRemoved,
             EventKind::Notification(_) => Kind::Notification,
             EventKind::FileDropped(_) => Kind::FileDropped,
+            EventKind::DragHover(_) => Kind::DragHover,
             EventKind::Battery(_) => Kind::Battery,
             EventKind::FocusChanged(_) => Kind::FocusChanged,
             EventKind::MediaChanged(_) => Kind::MediaChanged,
@@ -234,6 +242,7 @@ mod tests {
                 body: "b".into(),
             }),
             EventKind::FileDropped(vec![]),
+            EventKind::DragHover(true),
             EventKind::Battery(BatteryInfo {
                 percent: 50,
                 charging: false,

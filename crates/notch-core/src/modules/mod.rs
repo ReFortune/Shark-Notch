@@ -6,6 +6,7 @@ use crate::module::Factory;
 pub mod clipboard;
 pub mod clock;
 pub mod media;
+pub mod shelf;
 
 /// Every module this build knows about, in no particular order (page order comes from the config).
 pub fn registry() -> Vec<Factory> {
@@ -17,6 +18,10 @@ pub fn registry() -> Vec<Factory> {
         Factory {
             id: "clipboard",
             create: clipboard::create,
+        },
+        Factory {
+            id: "shelf",
+            create: shelf::create,
         },
         Factory {
             id: "clock",

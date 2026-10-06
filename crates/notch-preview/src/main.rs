@@ -20,7 +20,9 @@ use notch_core::compose::{self, Content, Metrics};
 use notch_core::config::Config;
 use notch_core::demo;
 use notch_core::draw::{Canvas, DrawList, ImageId};
-use notch_core::events::{ClipKind, ClipboardItem, Event, EventKind, MediaSnapshot, Source};
+use notch_core::events::{
+    ClipKind, ClipboardItem, Event, EventKind, FileEntry, MediaSnapshot, Source,
+};
 use notch_core::geom::{Rect, Vec2};
 use notch_core::module::{Env, ModuleHost};
 use notch_core::modules;
@@ -288,6 +290,27 @@ fn modules_sheet(out: &str, theme: Theme) {
         ),
         clip(6, ClipKind::Text, "an older entry", 0, false, Source::Local),
     ]);
+    let file = |id: u64, name: &str, size: u64, thumb: u64, is_dir: bool| FileEntry {
+        id,
+        name: name.into(),
+        path: format!("C:\\Users\\me\\{name}").into(),
+        size,
+        thumb,
+        is_dir,
+    };
+    images.insert(ImageId(3), fake_art());
+    host.dispatch(vec![Event::new(
+        Source::Local,
+        EventKind::FileDropped(vec![
+            file(1, "Q3-report.pdf", 2_400_000, 0, false),
+            file(2, "holiday.jpg", 5_100_000, 3, false),
+            file(3, "Projects", 0, 0, true),
+            file(4, "budget.xlsx", 88_000, 0, false),
+            file(5, "notes.md", 1_200, 0, false),
+            file(6, "demo-recording.mp4", 143_000_000, 3, false),
+            file(7, "backup.zip", 920_000_000, 0, false),
+        ]),
+    )]);
     let _ = host.take_out();
     let pages = host.pages();
     let mut shell = Shell::new(ShellConfig::default());

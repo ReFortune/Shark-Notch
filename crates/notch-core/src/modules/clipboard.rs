@@ -998,22 +998,24 @@ mod tests {
 
     #[test]
     fn works_inside_the_host_and_is_toggleable() {
+        let mut base = Config::default();
+        base.modules.order = vec!["media".into(), "clipboard".into(), "clock".into()];
         let mut host = ModuleHost::new(
             crate::modules::registry(),
-            Arc::new(Config::default()),
+            Arc::new(base.clone()),
             Theme::default(),
         );
         assert_eq!(
             host.page_ids(),
             vec!["clipboard", "clock"],
-            "always present (empty state), after media"
+            "always present (empty state); media only once there is a session"
         );
         host.dispatch(vec![Event::new(
             Source::Local,
             EventKind::ClipboardItem(item(1, "x", ClipKind::Text)),
         )]);
         assert!(host.take_out().shell.is_empty());
-        let mut cfg = Config::default();
+        let mut cfg = base;
         cfg.clipboard.enabled = false;
         assert!(!cfg.module_active("clipboard"));
         host.apply_config(Arc::new(cfg));

@@ -6,7 +6,7 @@
 //! also fades and scales in slightly (0.94 → 1) driven by the `content` spring — that is the "content
 //! follows the shape" half of the stagger.
 
-use crate::draw::{Canvas, DrawCmd, DrawList};
+use crate::draw::{Canvas, DrawCmd, DrawList, ImageId};
 use crate::geom::{Rect, Size, Vec2};
 use crate::shell::{ContentKind, ShellFrame};
 use crate::theme::Theme;
@@ -187,6 +187,81 @@ pub fn compose(
     }
 }
 
+/// A list that touches every kind of draw command once (shapes, strokes, text in each weight,
+/// icons, gradients, glows, clip layers, groups and — given an image — the bitmap brush), so the
+/// GPU driver's first-use costs are paid while the window is still hidden.
+pub fn warm_primitives(list: &mut DrawList, theme: &Theme, image: Option<ImageId>) {
+    use crate::draw::{Text, TextStyle, Weight};
+    use crate::icons::Icon;
+    let mut cv = Canvas::new(list, theme);
+    let r = |x: f32, y: f32, w: f32, h: f32| Rect::new(x, y, w, h);
+    cv.round_rect(r(4.0, 4.0, 40.0, 20.0), 8.0, theme.surface);
+    cv.squircle(r(48.0, 4.0, 40.0, 20.0), 8.0, theme.surface_hi);
+    cv.push(DrawCmd::StrokeRoundRect {
+        rect: r(92.0, 4.0, 40.0, 20.0),
+        radius: 8.0,
+        width: 2.0,
+        color: theme.accent,
+    });
+    cv.circle(Vec2::new(150.0, 14.0), 8.0, theme.accent);
+    cv.push(DrawCmd::Ring {
+        center: Vec2::new(176.0, 14.0),
+        radius: 8.0,
+        width: 3.0,
+        start_deg: 0.0,
+        sweep_deg: 200.0,
+        color: theme.text,
+    });
+    cv.push(DrawCmd::Line {
+        a: Vec2::new(192.0, 8.0),
+        b: Vec2::new(220.0, 20.0),
+        width: 2.0,
+        color: theme.text_dim,
+    });
+    for (i, w) in [
+        Weight::Regular,
+        Weight::Medium,
+        Weight::SemiBold,
+        Weight::Bold,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        cv.text(
+            r(4.0 + i as f32 * 60.0, 30.0, 58.0, 18.0),
+            Text::Static("Warm 0:12"),
+            TextStyle::new(13.0, w),
+            theme.text,
+        );
+    }
+    for (i, icon) in [Icon::Play, Icon::Pin, Icon::Globe, Icon::Note]
+        .into_iter()
+        .enumerate()
+    {
+        cv.icon(icon, r(4.0 + i as f32 * 26.0, 52.0, 20.0, 20.0), theme.text);
+    }
+    cv.push(DrawCmd::Gradient {
+        rect: r(110.0, 52.0, 40.0, 20.0),
+        radius: 6.0,
+        from: theme.accent,
+        to: theme.surface,
+        vertical: false,
+    });
+    cv.push(DrawCmd::Glow {
+        center: Vec2::new(176.0, 62.0),
+        radius: 20.0,
+        color: theme.accent.with_alpha(0.3),
+    });
+    if let Some(id) = image {
+        cv.image(id, r(200.0, 50.0, 24.0, 24.0), 6.0);
+    }
+    cv.push_clip(r(4.0, 76.0, 60.0, 20.0), 8.0);
+    cv.push_group(0.8, 0.96, Vec2::new(30.0, 86.0));
+    cv.round_rect(r(4.0, 76.0, 60.0, 20.0), 4.0, theme.accent);
+    cv.pop_group();
+    cv.pop_clip();
+}
+
 /// Everything the first animation would otherwise have to create on the spot.
 ///
 /// [`Warmup::run`] builds one display list per *kind* of frame the shell can show — every page, every
@@ -196,6 +271,8 @@ pub fn compose(
 /// ("pre-warm the first render"). Pages are drawn inside a shape slightly smaller than their content
 /// so the clip-layer path is exercised as well.
 pub struct Warmup<'a> {
+    /// A tiny cached image to draw once, so the bitmap-brush path is warmed too (optional).
+    pub image: Option<ImageId>,
     pub pages: &'a [Size],
     /// `(owner id, size)` of every module that has a peek banner.
     pub peeks: &'a [(u32, Size)],
@@ -225,6 +302,13 @@ impl Warmup<'_> {
         frame.content = 1.0;
         let shrink = 0.92;
         let mut n = 0;
+        // Every kind of draw command once, independent of what the modules happen to draw.
+        list.clear();
+        warm_primitives(list, self.theme, self.image);
+        n += 1;
+        if !sink(list) {
+            return n;
+        }
         let mut emit = |frame: &ShellFrame, list: &mut DrawList, content: &mut dyn Content| {
             compose(
                 frame,
@@ -532,6 +616,36 @@ mod tests {
     }
 
     #[test]
+    fn the_primitive_warmup_touches_every_kind_of_draw_command_and_balances() {
+        let theme = Theme::default();
+        let mut list = DrawList::new();
+        warm_primitives(&mut list, &theme, Some(ImageId(1)));
+        assert!(list.is_balanced());
+        let has = |f: fn(&DrawCmd) -> bool| list.cmds.iter().any(f);
+        assert!(has(|c| matches!(c, DrawCmd::RoundRect { .. })));
+        assert!(has(|c| matches!(c, DrawCmd::Squircle { .. })));
+        assert!(has(|c| matches!(c, DrawCmd::StrokeRoundRect { .. })));
+        assert!(has(|c| matches!(c, DrawCmd::Circle { .. })));
+        assert!(has(|c| matches!(c, DrawCmd::Ring { .. })));
+        assert!(has(|c| matches!(c, DrawCmd::Line { .. })));
+        assert!(has(|c| matches!(c, DrawCmd::Text { .. })));
+        assert!(has(|c| matches!(c, DrawCmd::Icon { .. })));
+        assert!(has(|c| matches!(c, DrawCmd::Image { .. })));
+        assert!(has(|c| matches!(c, DrawCmd::Gradient { .. })));
+        assert!(has(|c| matches!(c, DrawCmd::Glow { .. })));
+        assert!(has(|c| matches!(c, DrawCmd::PushClip { .. })));
+        assert!(has(|c| matches!(c, DrawCmd::PushGroup { .. })));
+        let mut without = DrawList::new();
+        warm_primitives(&mut without, &theme, None);
+        assert!(
+            !without
+                .cmds
+                .iter()
+                .any(|c| matches!(c, DrawCmd::Image { .. }))
+        );
+    }
+
+    #[test]
     fn warmup_covers_every_page_peek_and_the_chips() {
         let s = shell();
         let pages = demo::page_sizes();
@@ -539,6 +653,7 @@ mod tests {
         let theme = Theme::default();
         let m = Metrics::default();
         let plan = Warmup {
+            image: None,
             pages: &pages,
             peeks: &peeks,
             chips_width: 90.0,
@@ -553,10 +668,14 @@ mod tests {
             seen.push((l.cmds.len(), count_clips(l)));
             true
         });
-        assert_eq!(n, pages.len() + peeks.len() + 1);
+        assert_eq!(
+            n,
+            1 + pages.len() + peeks.len() + 1,
+            "primitives, pages, peeks, chips"
+        );
         assert_eq!(seen.len(), n);
         assert!(
-            seen[..pages.len()]
+            seen[1..=pages.len()]
                 .iter()
                 .all(|&(cmds, clips)| cmds > 3 && clips >= 1),
             "pages draw content and exercise the clip layer"
@@ -574,6 +693,7 @@ mod tests {
         let theme = Theme::default();
         let m = Metrics::default();
         let plan = Warmup {
+            image: None,
             pages: &pages,
             peeks: &[],
             chips_width: 0.0,
@@ -584,8 +704,8 @@ mod tests {
         let mut list = DrawList::new();
         assert_eq!(
             plan.run(&s.frame(), &mut list, &mut Demo, |_| true),
-            pages.len(),
-            "no peeks, no chips"
+            1 + pages.len(),
+            "primitives and pages; no peeks, no chips"
         );
         assert_eq!(
             plan.run(&s.frame(), &mut list, &mut Demo, |_| false),

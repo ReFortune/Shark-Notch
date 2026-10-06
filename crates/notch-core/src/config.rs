@@ -323,6 +323,26 @@ impl Default for ClipboardCfg {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+pub struct ShelfCfg {
+    pub enabled: bool,
+    /// Open the shelf by itself when a drag (of a file) heads for the top of the screen.
+    pub open_on_drag: bool,
+    /// Items kept on the shelf (older ones fall off; the files themselves are never touched).
+    pub max_items: u32,
+}
+
+impl Default for ShelfCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            open_on_drag: true,
+            max_items: 40,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Modules {
     /// Page order. Unknown ids are ignored; modules that are disabled are skipped.
     pub order: Vec<String>,
@@ -331,7 +351,12 @@ pub struct Modules {
 impl Default for Modules {
     fn default() -> Self {
         Self {
-            order: vec!["media".into(), "clipboard".into(), "clock".into()],
+            order: vec![
+                "media".into(),
+                "clipboard".into(),
+                "shelf".into(),
+                "clock".into(),
+            ],
         }
     }
 }
@@ -349,6 +374,7 @@ pub struct Config {
     pub modules: Modules,
     pub media: MediaCfg,
     pub clipboard: ClipboardCfg,
+    pub shelf: ShelfCfg,
     pub clock: ClockCfg,
 }
 
@@ -509,6 +535,7 @@ impl Config {
             w,
         );
         clamp_f(&mut self.media.peek_secs, 0.5, 10.0, "media.peek_secs", w);
+        clamp_u(&mut self.shelf.max_items, 1, 200, "shelf.max_items", w);
         clamp_u(
             &mut self.clipboard.max_items,
             5,
@@ -578,6 +605,7 @@ impl Config {
             "clock" => self.clock.enabled,
             "media" => self.media.enabled,
             "clipboard" => self.clipboard.enabled,
+            "shelf" => self.shelf.enabled,
             _ => false,
         };
         enabled && self.modules.order.iter().any(|m| m == id)
@@ -669,7 +697,7 @@ show_missed_indicator = true
 peek_over_fullscreen = false
 
 [modules]
-order = ["media", "clipboard", "clock"]   # page order; a module that is disabled in its own section is skipped
+order = ["media", "clipboard", "shelf", "clock"]   # page order; a module that is disabled in its own section is skipped
 
 [media]
 enabled = true                 # follows whatever Windows considers the current media session
@@ -685,6 +713,11 @@ capture_images = true
 max_text_kib = 256             # longer text is ignored
 persist_pins = true            # pinned *text* survives restarts (pins.json); nothing else is ever saved
 peek_phone_items = true        # briefly show items sent from the iPhone
+
+[shelf]
+enabled = true
+open_on_drag = true            # a file drag heading for the top of the screen opens the shelf
+max_items = 40                 # the shelf only holds references; your files are never moved or deleted
 
 [clock]
 enabled = true

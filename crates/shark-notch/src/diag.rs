@@ -27,7 +27,7 @@ use crate::app::{App, T_SCRIPT};
 use crate::services::clipboard as clip;
 use crate::win::clock;
 use crate::win::sys::{self, ProcMetrics};
-use crate::win::{paths, textclip};
+use crate::win::{dragdrop, paths, textclip};
 
 #[derive(Clone, Copy)]
 struct Mark {
@@ -96,6 +96,9 @@ pub struct SelfTest {
     /// `ClipboardItem` events seen before the current clipboard act.
     clip_mark: u32,
     clip_text_id: u64,
+    /// Bus-event counts before the shelf drop: `(DragHover, FileDropped)`.
+    shelf_mark: (u32, u32),
+    shelf_dir: Option<std::path::PathBuf>,
     /// Cycles per second of a busy core (calibrated), for tick-free CPU percentages.
     cycles_hz: f64,
     warm_idle: Option<(f64, f64)>,     // (cpu %, private MiB)
@@ -141,6 +144,12 @@ enum Act {
     ClipUnpinCheck,
     ClipPage,
     ClipProbe,
+    ShelfDrop,
+    ShelfCheck,
+    ShelfPage,
+    ShelfProbe,
+    ShelfOff,
+    ShelfOffCheck,
     Report,
 }
 
@@ -185,7 +194,13 @@ const SCRIPT: &[(f64, Act)] = &[
     (37.2, Act::ClipUnpinCheck),
     (37.3, Act::ClipPage),
     (38.8, Act::ClipProbe),
-    (39.3, Act::Report),
+    (39.3, Act::ShelfDrop),
+    (40.3, Act::ShelfCheck),
+    (40.4, Act::ShelfPage),
+    (41.9, Act::ShelfProbe),
+    (42.5, Act::ShelfOff),
+    (43.0, Act::ShelfOffCheck),
+    (43.5, Act::Report),
 ];
 
 const CLIP_TEXT: &str = "Selftest clipboard text";
@@ -282,6 +297,29 @@ fn clip_thumb_pixel(a: &App, page: usize, k: usize) -> (i32, i32) {
     )
 }
 
+/// Drive the notch's real OLE drop target the way the system does for a drag: enter, hover, drop.
+/// Returns the effects it answered with.
+fn simulate_drop(a: &App, data: &windows::Win32::System::Com::IDataObject) -> Option<[u32; 3]> {
+    use windows::Win32::Foundation::POINTL;
+    use windows::Win32::System::Ole::{DROPEFFECT, DROPEFFECT_NONE};
+    use windows::Win32::System::SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS};
+    let target = a.drop_target.as_ref()?;
+    let (pt, keys) = (POINTL { x: 0, y: 0 }, MODIFIERKEYS_FLAGS(MK_LBUTTON.0));
+    let mut e = [DROPEFFECT_NONE; 3];
+    unsafe {
+        let mut eff: DROPEFFECT = DROPEFFECT(0x7);
+        target.DragEnter(data, keys, pt, &mut eff).ok()?;
+        e[0] = eff;
+        eff = DROPEFFECT(0x7);
+        target.DragOver(keys, pt, &mut eff).ok()?;
+        e[1] = eff;
+        eff = DROPEFFECT(0x7);
+        target.Drop(data, keys, pt, &mut eff).ok()?;
+        e[2] = eff;
+    }
+    Some([e[0].0, e[1].0, e[2].0])
+}
+
 pub fn begin(a: &mut App) {
     let now = clock::now();
     if a.opts.light_probe {
@@ -300,6 +338,8 @@ pub fn begin(a: &mut App) {
         art_id: 0,
         clip_mark: 0,
         clip_text_id: 0,
+        shelf_mark: (0, 0),
+        shelf_dir: None,
         cycles_hz: sys::cycles_per_sec(),
         warm_idle: None,
         released_idle: None,
@@ -709,6 +749,118 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
                 }
             }
             a.collapse(true);
+        }
+        Act::ShelfDrop => {
+            let dir =
+                std::env::temp_dir().join(format!("shark-notch-selftest-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&dir);
+            let (f1, f2) = (dir.join("report.txt"), dir.join("notes.md"));
+            let _ = std::fs::write(&f1, vec![b'x'; 1234]);
+            let _ = std::fs::write(&f2, b"# notes\n");
+            st.shelf_dir = Some(dir);
+            st.shelf_mark = (
+                a.bus_counts[Kind::DragHover as usize],
+                a.bus_counts[Kind::FileDropped as usize],
+            );
+            let paths = [
+                f1.to_string_lossy().into_owned(),
+                f2.to_string_lossy().into_owned(),
+            ];
+            match dragdrop::data_object_for(&paths) {
+                None => st.fail(
+                    "shelf: the shell could not build a data object for two real files".into(),
+                ),
+                Some(data) => match simulate_drop(a, &data) {
+                    Some([enter, over, drop]) if enter == 1 && over == 1 && drop == 1 => {
+                        st.say("shelf: the OLE drop target accepted a file drag (enter, over, drop all answered COPY)".into());
+                    }
+                    other => st.fail(format!(
+                        "shelf: the drop target answered {other:?} (expected COPY=1 three times)"
+                    )),
+                },
+            }
+        }
+        Act::ShelfCheck => {
+            let hovers = a.bus_counts[Kind::DragHover as usize] - st.shelf_mark.0;
+            let drops = a.bus_counts[Kind::FileDropped as usize] - st.shelf_mark.1;
+            match (&a.last_files, drops) {
+                (Some(files), d) if d >= 1 && files.len() == 2 => {
+                    let names: Vec<String> = files.iter().map(|f| f.name.to_string()).collect();
+                    let big = files.iter().find(|f| f.name.as_ref() == "report.txt");
+                    let thumbs = files.iter().filter(|f| f.thumb != 0).count();
+                    st.say(format!(
+                        "shelf: drop arrived as {names:?}; report.txt is {} bytes; {thumbs} of 2 have a shell thumbnail/icon; {hovers} drag-hover event(s)",
+                        big.map_or(0, |f| f.size)
+                    ));
+                    if big.map(|f| f.size) != Some(1234) {
+                        st.fail("shelf: the dropped file's size is wrong".into());
+                    }
+                    if thumbs == 0 {
+                        st.fail(
+                            "shelf: no dropped file got an icon or thumbnail from the shell".into(),
+                        );
+                    }
+                    if hovers < 2 {
+                        st.fail("shelf: the drag highlight events (hover on, hover off) did not both arrive".into());
+                    }
+                }
+                _ => st.fail(format!(
+                    "shelf: the dropped files never reached the bus ({drops} event(s))"
+                )),
+            }
+        }
+        Act::ShelfPage => match a.host.page_of("shelf") {
+            Some(p) => {
+                a.shell.set_page(now, p);
+                a.expand(Trigger::Hotkey);
+            }
+            None => st.fail("the shelf page is not in the ring".into()),
+        },
+        Act::ShelfProbe => {
+            let sources = a.list.hits.iter().filter(|h| h.draggable).count();
+            st.say(format!(
+                "shelf: the open page registered {sources} drag source(s) ({} hit regions in all)",
+                a.list.hits.len()
+            ));
+            if sources < 2 {
+                st.fail("shelf: the dropped files did not become draggable tiles".into());
+            }
+            a.collapse(true);
+        }
+        Act::ShelfOff => {
+            // With the shelf switched off nothing may be accepted: the module and its worker are gone.
+            let mut cfg = a.cfg.clone();
+            cfg.shelf.enabled = false;
+            a.services.sync(&cfg);
+            let paths = st
+                .shelf_dir
+                .as_ref()
+                .map(|d| vec![d.join("report.txt").to_string_lossy().into_owned()])
+                .unwrap_or_default();
+            let verdict = dragdrop::data_object_for(&paths).and_then(|d| simulate_drop(a, &d));
+            match verdict {
+                Some([0, 0, 0]) => st.say(
+                    "shelf: with the module switched off the drop target refuses drags".into(),
+                ),
+                other => st.fail(format!(
+                    "shelf: a drag was not refused while the shelf is off: {other:?}"
+                )),
+            }
+            // And back on, as the user left it.
+            let cfg = a.cfg.clone();
+            a.services.sync(&cfg);
+        }
+        Act::ShelfOffCheck => {
+            let on = a.services.shelf().is_some();
+            st.say(format!(
+                "shelf: worker running again after re-enabling: {on}"
+            ));
+            if !on {
+                st.fail("shelf: the worker did not come back after re-enabling the module".into());
+            }
+            if let Some(d) = st.shelf_dir.take() {
+                let _ = std::fs::remove_dir_all(d);
+            }
         }
         Act::Report => finish(a, st),
     }

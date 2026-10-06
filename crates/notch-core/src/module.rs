@@ -61,12 +61,25 @@ pub enum ClipCmd {
     Clear,
 }
 
+/// Operations on the file shelf. The shelf only ever holds *references* to files: nothing here
+/// deletes, moves or renames a user's file.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ShelfCmd {
+    /// Open a file or folder with its default application.
+    Open(Arc<str>),
+    /// Start a drag-and-drop of these paths out of the notch (copy/link only, never move).
+    DragOut(Vec<Arc<str>>),
+    /// These thumbnail images are no longer shown: free them.
+    Release(Vec<u64>),
+}
+
 /// Things a module asks the platform to do. Modules never call the OS themselves.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     OpenUrl(Arc<str>),
     Media(MediaCmd),
     Clipboard(ClipCmd),
+    Shelf(ShelfCmd),
 }
 
 /// Requests that concern the shell itself.

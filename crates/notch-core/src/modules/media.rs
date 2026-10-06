@@ -1203,7 +1203,7 @@ mod tests {
     #[test]
     fn works_inside_the_host_and_follows_the_config() {
         let mut base = Config::default();
-        base.clipboard.enabled = false; // keep the ring to media + clock for this test
+        base.modules.order = vec!["media".into(), "clock".into()]; // media + clock only
         let mut host = ModuleHost::new(
             crate::modules::registry(),
             Arc::new(base.clone()),

@@ -32,11 +32,14 @@ pub enum Icon {
     Doc,
     /// Arrow leaving a box: open externally.
     Open,
+    Folder,
+    /// An inbox tray with a down arrow: "drop it here".
+    Tray,
 }
 
 impl Icon {
     /// Every icon, for tests and the preview tool.
-    pub const ALL: [Icon; 19] = [
+    pub const ALL: [Icon; 21] = [
         Icon::Play,
         Icon::Pause,
         Icon::Next,
@@ -56,6 +59,8 @@ impl Icon {
         Icon::Image,
         Icon::Doc,
         Icon::Open,
+        Icon::Folder,
+        Icon::Tray,
     ];
 }
 
@@ -297,6 +302,43 @@ pub fn ops(icon: Icon) -> Vec<IconOp> {
                     ],
                     false,
                 ),
+                2.0,
+            ),
+        ],
+        Icon::Folder => vec![Stroke(
+            polyline(
+                &[
+                    (3.5, 18.5),
+                    (3.5, 6.0),
+                    (9.5, 6.0),
+                    (11.5, 8.5),
+                    (20.5, 8.5),
+                    (20.5, 18.5),
+                ],
+                true,
+            ),
+            2.0,
+        )],
+        Icon::Tray => vec![
+            Stroke(
+                polyline(
+                    &[
+                        (3.5, 13.5),
+                        (3.5, 19.5),
+                        (20.5, 19.5),
+                        (20.5, 13.5),
+                        (15.5, 13.5),
+                        (14.0, 16.0),
+                        (10.0, 16.0),
+                        (8.5, 13.5),
+                    ],
+                    true,
+                ),
+                2.0,
+            ),
+            Stroke(polyline(&[(12.0, 3.5), (12.0, 11.5)], false), 2.0),
+            Stroke(
+                polyline(&[(8.5, 8.5), (12.0, 12.0), (15.5, 8.5)], false),
                 2.0,
             ),
         ],

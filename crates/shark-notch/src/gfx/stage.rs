@@ -324,6 +324,8 @@ impl Stage {
 
 impl Drop for Stage {
     fn drop(&mut self) {
+        // The OLE drop target must be revoked before its window goes away (a no-op if never registered).
+        crate::win::dragdrop::revoke(self.hwnd);
         unsafe {
             let _ = DestroyWindow(self.hwnd);
         }
