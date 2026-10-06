@@ -27,7 +27,9 @@ The link is **off by default**. A listener is something you switch on, knowing w
    listen = true
    ```
 
-   Save. The notch picks it up at once (no restart).
+   Save. The notch picks it up at once (no restart). The link runs only while the iPhone page
+   exists, which it does by default (`[phone] enabled = true` and `"phone"` in `[modules] order`):
+   the page is also where you copy the token.
 
 2. Windows Defender Firewall asks whether to let **Shark Notch** talk on the network the first time
    it listens. Tick **Private networks** and **untick Public networks**, then *Allow*. (If you

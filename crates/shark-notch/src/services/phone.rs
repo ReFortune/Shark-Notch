@@ -42,8 +42,9 @@ use notch_core::events::{
 use notch_core::phone::{self as proto, Action, Head, HttpError, LocalNet, LoginGuard, Route};
 use windows::Win32::Foundation::ERROR_BUFFER_OVERFLOW;
 use windows::Win32::NetworkManagement::IpHelper::{
-    GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST, GetAdaptersAddresses,
-    IF_TYPE_SOFTWARE_LOOPBACK, IF_TYPE_TUNNEL, IP_ADAPTER_ADDRESSES_LH,
+    GAA_FLAG_INCLUDE_GATEWAYS, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER,
+    GAA_FLAG_SKIP_MULTICAST, GetAdaptersAddresses, IF_TYPE_SOFTWARE_LOOPBACK, IF_TYPE_TUNNEL,
+    IP_ADAPTER_ADDRESSES_LH,
 };
 use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
 use windows::Win32::Networking::WinSock::{AF_INET, SOCKADDR_IN};
@@ -1040,7 +1041,11 @@ fn local_stamp() -> String {
 
 /// The IPv4 addresses of this PC on networks that are up (not loopback or tunnels).
 fn local_networks() -> Vec<LocalNet> {
-    let flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+    // Gateways are only filled in when asked for: they tell the home network from a virtual switch.
+    let flags = GAA_FLAG_INCLUDE_GATEWAYS
+        | GAA_FLAG_SKIP_ANYCAST
+        | GAA_FLAG_SKIP_MULTICAST
+        | GAA_FLAG_SKIP_DNS_SERVER;
     let mut len: u32 = 15 * 1024;
     for _ in 0..4 {
         // 8-byte words: the system's structures want that alignment.

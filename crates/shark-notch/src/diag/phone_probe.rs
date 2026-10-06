@@ -349,9 +349,13 @@ pub fn port_closed(port: u16) -> Line {
             false,
             format!("port {port} still accepts connections after the link was switched off"),
         ),
+        // (Windows retries a refused connection for a couple of seconds, so a timeout is what a
+        // closed port looks like within this short wait; an open one answers at once.)
         Err(e) => (
             true,
-            format!("port {port} refuses connections once the link is switched off ({e})"),
+            format!(
+                "port {port} no longer accepts connections once the link is switched off ({e})"
+            ),
         ),
     }
 }

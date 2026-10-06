@@ -579,6 +579,20 @@ fn report_lines(st: &mut SelfTest, lines: Vec<phone_probe::Line>) {
     }
 }
 
+/// Does the clipboard carry the "do not record me" flag that password managers set?
+fn clipboard_is_excluded() -> bool {
+    use windows::Win32::System::DataExchange::{
+        IsClipboardFormatAvailable, RegisterClipboardFormatW,
+    };
+    use windows::core::w;
+    unsafe {
+        IsClipboardFormatAvailable(RegisterClipboardFormatW(w!(
+            "ExcludeClipboardContentFromMonitorProcessing"
+        )))
+        .is_ok()
+    }
+}
+
 /// A real mouse click on the region `id` of the last frame, through the app's own mouse handler.
 fn click_region(a: &mut App, id: u32) -> bool {
     use windows::Win32::Foundation::{LPARAM, WPARAM};
@@ -2153,14 +2167,20 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
             }
         }
         Act::PhoneCopyCheck => {
-            let on_clipboard = clip::current_text(a.ctrl);
+            // The raw text on the clipboard: the clipboard service itself would not show it, because
+            // the token is flagged "do not record" (that is the point).
+            let on_clipboard = textclip::read_text(a.ctrl, 100);
             let ok = on_clipboard.is_some() && on_clipboard == a.services.phone_token();
+            let flagged = clipboard_is_excluded();
             let in_history = clip_events(a) != st.clip_mark;
             st.say(format!(
-                "phone: Copy token put the token on the clipboard: {ok}; it was added to the clipboard history: {in_history}"
+                "phone: Copy token put the token on the clipboard: {ok}; flagged so that clipboard histories skip it: {flagged}; it was added to the notch's clipboard history: {in_history}"
             ));
             if !ok {
                 st.fail("phone: Copy token did not put the token on the clipboard".into());
+            }
+            if !flagged {
+                st.fail("phone: the token on the clipboard is not flagged 'do not record'".into());
             }
             if in_history {
                 st.fail("phone: the token showed up in the clipboard history".into());

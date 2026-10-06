@@ -8,6 +8,10 @@ This document is the "propose first" step. It lists the structure, the crates, t
 writing it. Work proceeds phase by phase as requested; each phase is one or more commits and the
 measurements for it are recorded in [`PERFORMANCE.md`](PERFORMANCE.md).
 
+> **Read §9 too.** The proposal below is kept as written, so you can see what was promised. Where the
+> build did something different (and why), §9 says so; where it did not manage something, §9 says
+> that too.
+
 ---
 
 ## 0. Decisions you may want to weigh in on
@@ -320,3 +324,60 @@ tests / Windows CI / needs-your-machine), and what changed.
 * DND toggle registry semantics and brightness IOCTL support vary by Windows build / panel driver.
 * Anti-cheat: nothing here uses hooks, injection or foreign-process handles, and everything is
   suspended while a fullscreen app is foreground — but I cannot test against EAC/BattlEye/Vanguard.
+
+## 9. What changed while building
+
+The proposal above was followed except where listed here. Nothing in this list is hidden elsewhere:
+if the build deviated, it is here.
+
+**Done differently**
+
+* **iPhone link (D9, phase 11).** It listens on **all IPv4 addresses** (`0.0.0.0`), not "only
+  private-range interface addresses": who may talk to it is decided *per connection* (a private
+  address, and by default one on the same network as one of the PC's own adapters; anything else is
+  dropped before a byte is read). Following the network as adapters come and go is more machinery
+  than that check, for no more safety. The paths are `/ping`, `/clipboard`, `/file`, `/battery`,
+  `/focus` and `/notify` (no `/v1/` prefix; `/notify` is new). Added beyond the proposal: the token is
+  checked **before** the path is routed (a stranger learns nothing, not even which paths exist),
+  constant-time token comparison, a folder per received file, blocked program and script types, the
+  "downloaded from the internet" mark on received files, retention and a cap on the inbox, and
+  pacing so that requests from a stranger (who has no token) cannot cause more than one redraw a
+  second. The link is **off by default**.
+* **Battery (phase 9)** is read with `GetSystemPowerStatus` when the page asks for a reading (while it
+  is on screen), not through power-setting notifications. It costs nothing while the page is closed
+  either way.
+* **Command centre (phase 10).** The volume is read once a second while the page is open instead of
+  through a change callback. **Do-not-disturb is read-only:** Windows has no supported way to change
+  it (see [`CONTROL.md`](CONTROL.md)). **No DDC/CI**: brightness works for the built-in panel only;
+  external monitors say so on the page.
+* **Typing into the to-do list (D4).** The `todo.inline_edit` switch was not built. Clicking the input
+  activates the notch for the duration of the edit, as proposed; turning the whole Focus page off
+  (`[pomodoro] enabled = false`) is the way to have no typing at all.
+* **Fullscreen suspension (§5.8).** The media, clipboard and calendar services pause, the
+  microphone/camera watcher stops, and the stats and control workers only ever run while their page
+  is open. The iPhone listener keeps listening (it is a thread asleep in `accept()`); what it
+  receives is queued silently like any other notification.
+* **CI and hitches (§7).** CI does **not** fail a run for a hitch: the self-test reports every burst
+  and the total, and prints a heartbeat that says whether the whole virtual machine stalled (a
+  hitch there is not the app's). It fails on a frame that cannot be drawn or presented, too few
+  frames, and any scenario check that does not hold. A gate on hitches would fail on VM noise.
+* **`PERFORMANCE.md`** was written at the end, from the CI logs of each phase's run, not appended after
+  every phase as §7 says. The numbers are the self-test's own; the per-phase table is in that file.
+
+**Not done**
+
+* **Progress for the app's own transfers** (D8: shelf copies, phone uploads). Nothing shows a progress
+  bar for them. Downloads show size and speed; Explorer copies remain infeasible, as proposed.
+* **Phone to tasks / to-do.** The proposal mentioned tasks arriving from the phone; there is no such
+  address.
+* **A QR code for pairing.** The token is copied to the clipboard and you move it to the phone
+  yourself (see [`IPHONE_SHORTCUTS.md`](IPHONE_SHORTCUTS.md)). A QR code on the page would make that
+  nicer and would also put the token on the screen; it is a possible addition, not a promise.
+* **TLS** for the iPhone link, as decided in D9.
+* **A licence file.** D12 stands: none was added.
+
+**Could not be verified here** (the build ran on a Linux container and a virtual Windows runner):
+anything on a real GPU, panel, microphone, laptop battery, radios, the Windows notification
+listener, a real browser's downloads, real drag and drop, a real iPhone and Shortcuts, a real
+Windows Firewall prompt, and anti-cheat software. Each module's document lists its own.
+

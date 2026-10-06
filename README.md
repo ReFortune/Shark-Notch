@@ -4,24 +4,59 @@ A tiny, animated overlay at the top-centre of your Windows screen — the MacBoo
 idea — written in **Rust** with the `windows` crate. No Electron, no WebView2, no browser engine:
 **Direct2D + DirectComposition + DirectWrite**, one small process, event-driven everywhere it can be.
 
-> **Status.** Built phase by phase; see [`docs/DESIGN.md`](docs/DESIGN.md) for the design and the
-> decisions you may want to veto, and [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for what was measured,
-> where, and what still needs *your* hardware. Phases implemented so far are listed under
-> [Roadmap](#roadmap).
+> **Status.** All eleven planned phases are implemented, and every commit builds, passes its tests and
+> runs a scripted self-test of the real app on a Windows CI runner. **What nobody has done yet is run
+> it on your hardware.** The build machine was a Linux container plus a virtual Windows machine with
+> no GPU, no audio device, no battery and no iPhone, so each page below says what that leaves
+> unproven. Read [What is and is not verified](#what-is-and-is-not-verified) before you trust a
+> claim, [`docs/DESIGN.md`](docs/DESIGN.md) (§9 lists where the build differs from the proposal) and
+> [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for the numbers.
 
 ## What it does
 
-* **Shell** — a borderless, always-on-top, click-through pill hugging the top edge of your monitor.
-  Hover the top-centre for ~150 ms (or press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd>) and it
-  springs open; scroll or swipe to switch pages; move away and it springs shut.
-* **Premium motion** — width, height, corner radius, ear size and position are *independent springs*;
-  every transition is interruptible and keeps its velocity; the shape moves first and the content
-  follows; vsync-locked and refresh-rate aware; respects Windows' "Animation effects" setting.
-* **Stays out of the way** — never takes focus, no taskbar button, hides from screen shares by
-  default, steps aside (and frees the GPU) while a game or fullscreen app is in front, uses no
-  hooks and no injection — `RegisterHotKey` is the only global input mechanism.
-* **Light** — the idle pill is a few-hundred-byte bitmap in a layered window; the GPU stack exists
-  only while it is being used (and is pre-warmed when the cursor approaches).
+The collapsed notch is a thin pill hugging the top edge of your monitor. Hover the top-centre for
+~150 ms (or press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd>) and it springs open; scroll or swipe to
+switch pages; move away and it springs shut. Small **chips** appear on the pill for things that
+matter right now (a microphone in use, a timer, the next meeting, a download, your phone's Focus).
+
+| Page | What it is | More |
+|------|-----------|------|
+| **Media** | Whatever Windows thinks is playing: art, title, seek bar, controls, level bars | |
+| **Clipboard** | History of text, links and images; pin; click to copy back; items from your iPhone are labelled | |
+| **Shelf** | Drop files on the notch (a drag toward the top opens it), drag them out again. It holds *references*: your files are never moved or deleted | |
+| **Notifications** | Windows toasts as banners and a list, a "missed" badge after a fullscreen session; banners your iPhone shortcuts send | [`docs/NOTIFICATIONS.md`](docs/NOTIFICATIONS.md) |
+| **Calendar** | Your ICS feeds (Outlook, Google, iCloud): month grid, agenda, a **Join** button, a countdown chip | [`docs/CALENDAR_AND_FOCUS.md`](docs/CALENDAR_AND_FOCUS.md) |
+| **Focus** | Pomodoro timer with a task list | same |
+| **Live** | A chip while a program uses the microphone or camera, quick timers, browser downloads in progress | [`docs/LIVE.md`](docs/LIVE.md) |
+| **Stats** | CPU, memory, GPU, network and battery, with a minute of history; measured only while the page is open | [`docs/STATS.md`](docs/STATS.md) |
+| **Controls** | Volume, brightness, Wi-Fi, Bluetooth, a snip button, Windows' Focus state (read only) | [`docs/CONTROL.md`](docs/CONTROL.md) |
+| **iPhone** | Link status, the phone's battery and Focus, the pairing token. iOS Shortcuts send clipboard text, files, battery and Focus here | [`docs/IPHONE_SHORTCUTS.md`](docs/IPHONE_SHORTCUTS.md) |
+| **Clock** | Time, date, week number | |
+
+Every module can be switched off in `config.toml` (a module that is off is never created: no thread, no
+subscription, no loaded WinRT) and reordered in `[modules] order`.
+
+**Premium motion.** Width, height, corner radius, ear size and position are *independent springs*;
+every transition is interruptible and keeps its velocity; the shape moves first and the content
+follows; frames are vsync-locked and refresh-rate aware; it respects Windows' "Animation effects"
+setting.
+
+**Stays out of the way.**
+
+* It never takes focus (`WS_EX_NOACTIVATE`), has no taskbar button and no main window — a tray icon
+  only (hideable), one instance, optional start with Windows.
+* It is **hidden from screenshots and screen sharing** by default (`exclude_from_capture`).
+* It **steps aside while a game or any fullscreen app is in front**: the notch hides, the modules
+  pause, the GPU is released, hover is off; notifications queue silently and a "missed" dot shows
+  afterwards. Detection uses `SetWinEventHook` (out of context) and the monitor's coverage, with
+  `SHQueryUserNotificationState` as a second opinion; nothing polls for it.
+* **No hooks, no injection.** It never injects into another process and installs no keyboard or mouse
+  hook (that is how anti-cheat tells friends from cheats). `RegisterHotKey` is the only global input
+  mechanism; hover is a 10 Hz cursor sample that stops entirely while paused, locked, display-off or
+  when a fullscreen app is in front.
+* **Nothing phones home.** The only network use is the calendar feeds you configure (HTTPS, through
+  Windows' own stack) and, **if you switch it on**, the iPhone link on your own network. No telemetry,
+  no update check.
 
 ## Build and run
 
@@ -34,16 +69,24 @@ cargo build --release -p shark-notch
 ```
 
 On first run a commented `config.toml` is written to `%APPDATA%\SharkNotch\` (tray menu →
-*Open settings*). Saved changes apply immediately; a mistake keeps the previous settings and shows
-the error in the tray tooltip. Logs: `%LOCALAPPDATA%\SharkNotch\notch.log`.
+*Open settings (config.toml)*). Saved changes apply immediately; a mistake keeps the previous
+settings and shows the error in the tray tooltip. Logs and saved data live in
+`%LOCALAPPDATA%\SharkNotch\` (`notch.log`, pinned clips, tasks, the iPhone inbox).
 
-Useful command-line switches:
+The tray menu: open/close the notch, pause, open or reload the settings, start with Windows, copy a
+frame-time report, copy diagnostics, hide the tray icon, quit.
+
+Command-line switches:
 
 | Switch | Effect |
 |--------|--------|
-| `--selftest [--out file]` | Scripted run of the real app; prints frame-time bursts, idle CPU/RAM with the GPU warm and released, and the GPU warm-up cost. Add `--no-exclude --light-probe` to also probe the actual screen pixels, and `--registry-probe` to let it write (and remove) a fake microphone-use record to test the privacy chip. |
+| `--selftest [--out file]` | Scripted run of the real app; prints frame-time bursts, idle CPU/RAM with the GPU warm and released, the GPU warm-up cost, and a pass/fail line for every scenario. Add `--no-exclude --light-probe` to also probe the actual screen pixels, and `--registry-probe` to let it write (and remove) a fake microphone-use record to test the privacy chip. |
 | `--config path` | Use a different config file. |
 | `--console` | Echo the log to the console that launched it. |
+
+`--selftest` uses a scratch data folder and its own configuration; it never touches your settings or
+saved data. **Run it on your machine** if anything feels off: it prints the numbers that matter for
+*your* GPU driver ([`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) says how to read them).
 
 ### On other operating systems
 
@@ -62,32 +105,85 @@ cargo check --target x86_64-pc-windows-msvc -p shark-notch   # type-check the Wi
 notch-core  (portable, #![forbid(unsafe_code)], all logic + tests)
   spring · path (continuous corners) · shell (state machine) · hover (FSM) · compose
   config · hotkey · input · fullscreen (decision) · frame (pacing) · raster · icons · draw (display list)
+  bus (typed events with a source tag) · module (the Module trait + host) · modules/* (one file each)
+  the logic of the services: phone (HTTP and auth), clipstore, ics, timers, stats, chart ...
 
 shark-notch (Windows glue only)
   app          the controller + single message loop; GPU residency; suspension; hot reload
   gfx::stack   D3D11 -> DXGI -> D2D -> DirectWrite -> DirectComposition (power-efficient GPU first)
   gfx::stage   the composition window + swap chain (never resized mid-animation)
   gfx::render  display list -> Direct2D          gfx::pill  display list -> CPU layered window
+  services::*  OS-backed event producers (media, clipboard, shelf, notifications, calendar, privacy,
+               downloads, stats, control, phone), alive only while their module is
   win::*       sampler, fullscreen watcher, session, tray, hotkeys, autostart, single instance, ...
+  diag         the self-test script
 
 notch-preview (dev only)   display list -> PNG with tiny-skia, so layouts can be inspected anywhere
 ```
 
-The key idea: **modules never touch pixels**. They emit a display list (shapes, text, icons, hit
-regions); the Direct2D backend and the PNG previewer execute the *same* list. The shell is a pure
-state machine driven by an injected clock, so springs, stagger, hover dwell, suppression and
-fullscreen decisions are unit-tested on any OS.
+**Modules never touch pixels.** They emit a display list (shapes, text, icons, hit regions); the
+Direct2D backend and the PNG previewer execute the *same* list. The shell is a pure state machine
+driven by an injected clock, so springs, stagger, hover dwell, suppression and fullscreen decisions are
+unit-tested on any OS.
 
-How idle stays ~0 %: the loop waits in `MsgWaitForMultipleObjectsEx` with an infinite timeout unless a
-deadline is pending; the swap chain's frame-latency handle is added to the wait set *only while
-animating*; the only recurring wake-up is a 10 Hz cursor sample that stops entirely while paused,
-locked, display-off or a fullscreen app is foreground.
+**One event bus, a source tag on every event.** A clipboard item, a battery level or a Focus change is
+the same small typed event whether it came from this PC or from the iPhone; only `source` differs
+(`Local` | `Phone`), so the UI draws both the same way. Transports (the iPhone listener is one) are
+ordinary services that produce events; modules never call Win32, they send `Command`s.
+
+**How idle stays ~0 %.** The loop waits in `MsgWaitForMultipleObjectsEx` with an infinite timeout unless
+a deadline is pending; the swap chain's frame-latency handle is in the wait set *only while animating*;
+a module's poll runs only while its page is expanded and visible; the idle pill is a few-hundred-byte
+bitmap in a layered window, and the GPU stack exists only while something is drawn (it is pre-warmed
+when the cursor approaches, so the first animation does not wait for it).
+
+## Performance
+
+The budget was ~10–30 MB of RAM and ~0 % CPU at idle, with the render loop running only during
+animations. Measured by `--selftest` on a CI virtual machine (a **software renderer**, 1024×768,
+64 Hz; the full report and the numbers per phase are in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)):
+
+| | |
+|---|---|
+| Idle CPU, pill collapsed | about **0.2 %** of one core on a busy VM (no timers; the only recurring wake-up is the 10 Hz cursor sample) |
+| Memory, GPU stack warm | **11.8 MiB** private working set (40 MiB working set incl. shared DLLs) |
+| Memory, GPU stack released | **6.6 MiB** committed (the working set is trimmed to under 1 MiB) |
+| Bringing the GPU stack back | 43 ms; creating it cold: 230 ms (so it is pre-warmed when the cursor approaches) |
+| A page open and polling (stats, once a second) | 0.5 % of a core; **nothing** is read once it closes |
+| The iPhone listener, switched on, nobody connected | 0.2 % (a thread asleep in `accept()`) |
+
+**Read these with care.** A software renderer is not your GPU: a real driver loads tens of MB of
+user-mode DLLs, which is exactly why the GPU stack is released when nothing is drawn, but it also
+means *your* warm number will be higher than 11.8 MiB. The same VM also made frames hitch: the
+self-test counts every frame that took longer than 1.5× the refresh interval and reports the
+worst; on the software renderer a first frame of something new can take 100–300 ms. Nothing here
+proves your machine hitch-free: run `shark-notch.exe --selftest` on it, and see
+[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for how to read the report.
+
+## What is and is not verified
+
+Three tiers, and each claim in the docs says which one it is in:
+
+1. **Tested on any OS** — everything that is logic (springs, state machines, config, the event bus, every
+   module's views and behaviour, the calendar and clipboard engines, the iPhone protocol and its
+   security checks, fuzzed against garbage) runs under `cargo test` on Linux *and* on Windows.
+2. **Run for real on a virtual Windows machine in CI** — the app builds with the real MSVC toolchain,
+   and `--selftest` drives the real windows, the D3D11/D2D/DirectComposition stack (software renderer),
+   the real clipboard, the real drop target, a loopback client against the real iPhone listener, and so
+   on, checking what comes out. No GPU, no audio device, no battery, no radios, no microphone, no
+   notification access and no iPhone exist there.
+3. **Needs your hardware** — a real GPU driver (the memory numbers CI prints are a software
+   renderer's), your monitors and DPI, SMTC with a real player, real drag and drop, the Windows
+   notification listener, a laptop's battery and panel, radios, real browsers' downloads, real
+   calendar feeds, an iPhone with Shortcuts, the Windows Firewall prompt, and anti-cheat software.
+   Each module's document ends with its own list. Where something is **not feasible at all**, the
+   document says so instead of pretending (Explorer copy progress, changing Windows' do-not-disturb).
 
 ## Roadmap
 
 | # | Phase | State |
 |--:|-------|-------|
-| 1 | Shell (window, springs, hover/hotkey, tray, fullscreen, config) | implemented — see `docs/PERFORMANCE.md` |
+| 1 | Shell (window, springs, hover/hotkey, tray, fullscreen, config) | implemented — see [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) |
 | 2 | Event bus + `Module` trait + clock module | implemented |
 | 3 | Media (SMTC, album art, controls, seek, visualizer) | implemented — needs your hardware for the live SMTC check |
 | 4 | Clipboard history (text, links, images; pin; re-copy) | implemented |
@@ -102,5 +198,5 @@ locked, display-off or a fullscreen app is foreground.
 ## Attribution and licence
 
 The UX was *inspired* by [Bloom](https://github.com/SehajveerSingh2005/bloom) (GPL-3.0): which pages
-exist and how scrolling cycles them. No Bloom code, assets or layouts are used here. This repository
-has no licence file yet; that choice is yours.
+exist and how scrolling cycles them. No Bloom code, assets or layouts are used here; everything was
+written from scratch. This repository has no licence file yet; that choice is yours.

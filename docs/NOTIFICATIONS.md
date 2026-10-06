@@ -8,8 +8,11 @@ nobody has been able to test yet.
 ## What works without any setup
 
 * Everything else in the notch.
-* **iPhone notifications** (phase 11) are delivered by Shark Notch's own listener and need no Windows
-  permission at all. They use the same banner and the same page.
+* **Banners from your iPhone** (phase 11): a shortcut can send one (`/notify`, see
+  [`IPHONE_SHORTCUTS.md`](IPHONE_SHORTCUTS.md)). They come through Shark Notch's own listener, need no
+  Windows permission at all, and use the same banner and the same page. iOS does not hand your phone's
+  *own* notifications to Shortcuts, so those cannot be mirrored; only what a shortcut chooses to send
+  arrives.
 * The page tells you plainly when Windows notifications are unavailable ("Windows notifications
   need app identity"), instead of staying empty.
 
