@@ -455,6 +455,44 @@ fn modules_sheet(out: &str, theme: Theme) {
             data: Some(saved.into()),
         }),
     )]);
+    // Live activities: a call on the microphone and camera, two downloads, two quick timers.
+    let timers = format!(
+        r#"{{"items":[{{"id":1,"label":"10 min","end":{},"total":600}},
+            {{"id":2,"label":"30 min","end":{},"total":1800}}],"next_id":3}}"#,
+        now + 420,
+        now + 1500
+    );
+    host.dispatch(vec![
+        Event::new(
+            Source::Local,
+            EventKind::Privacy(std::sync::Arc::new(notch_core::events::PrivacyState {
+                mic: vec!["Zoom".into()],
+                camera: vec!["Teams".into()],
+            })),
+        ),
+        Event::new(
+            Source::Local,
+            EventKind::Downloads(std::sync::Arc::new(vec![
+                notch_core::events::ActiveDownload {
+                    name: "ubuntu-26.04-desktop-amd64.iso".into(),
+                    bytes: 1_840_000_000,
+                    speed_bps: 31_500_000,
+                },
+                notch_core::events::ActiveDownload {
+                    name: "setup.exe".into(),
+                    bytes: 31_000_000,
+                    speed_bps: 0,
+                },
+            ])),
+        ),
+        Event::new(
+            Source::Local,
+            EventKind::StoreLoaded(StoreItem {
+                key: "timers".into(),
+                data: Some(timers.into()),
+            }),
+        ),
+    ]);
     let _ = host.take_out();
     let pages = host.pages();
     let mut shell = Shell::new(ShellConfig::default());
@@ -503,6 +541,25 @@ fn modules_sheet(out: &str, theme: Theme) {
         }
     }
     render_cells(out, &theme, &cells, &pages, &images, &mut host);
+
+    // The live module shows one banner at a time (the latest), so the download one gets its own
+    // picture: a finished download, with the button that shows the file in its folder.
+    host.dispatch(vec![Event::new(
+        Source::Local,
+        EventKind::DownloadDone(notch_core::events::DownloadDone {
+            name: "ubuntu-26.04-desktop-amd64.iso".into(),
+            path: "C:\\Users\\you\\Downloads\\ubuntu-26.04-desktop-amd64.iso".into(),
+            bytes: 5_900_000_000,
+        }),
+    )]);
+    let _ = host.take_out();
+    if let (Some(owner), Some(size)) = (host.peek_owner("live"), host.peek_size("live")) {
+        shell.peek(t, owner, size, 5.0);
+        run(&mut shell, &mut t, 0.6);
+        let cells = vec![("peek: live (download)".to_string(), shell.frame())];
+        let second = out.replace(".png", "-download.png");
+        render_cells(&second, &theme, &cells, &pages, &images, &mut host);
+    }
 }
 
 /// Every icon on the notch background, large and at real size, for visual review.

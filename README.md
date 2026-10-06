@@ -41,7 +41,7 @@ Useful command-line switches:
 
 | Switch | Effect |
 |--------|--------|
-| `--selftest [--out file]` | Scripted run of the real app; prints frame-time bursts, idle CPU/RAM with the GPU warm and released, and the GPU warm-up cost. Add `--no-exclude --light-probe` to also probe the actual screen pixels. |
+| `--selftest [--out file]` | Scripted run of the real app; prints frame-time bursts, idle CPU/RAM with the GPU warm and released, and the GPU warm-up cost. Add `--no-exclude --light-probe` to also probe the actual screen pixels, and `--registry-probe` to let it write (and remove) a fake microphone-use record to test the privacy chip. |
 | `--config path` | Use a different config file. |
 | `--console` | Echo the log to the console that launched it. |
 
@@ -94,7 +94,7 @@ locked, display-off or a fullscreen app is foreground.
 | 5 | File shelf (OLE drop target, drag out) | implemented — real drag-and-drop needs your hardware |
 | 6 | Windows notifications (banner, list, missed badge) | implemented — needs a one-off identity step and your hardware, see [`docs/NOTIFICATIONS.md`](docs/NOTIFICATIONS.md) |
 | 7 | Calendar (ICS feeds, month view, Join banner, countdown chip) + Pomodoro with tasks | implemented — real feeds and typing need your machine, see [`docs/CALENDAR_AND_FOCUS.md`](docs/CALENDAR_AND_FOCUS.md) |
-| 8 | Live activities | planned |
+| 8 | Live activities (microphone/camera chip, quick timers, browser downloads with *Show in folder*) | implemented — the privacy chip and real browsers need your machine; copy progress is **not** feasible, see [`docs/LIVE.md`](docs/LIVE.md) |
 | 9 | System stats | planned |
 | 10 | Command centre | planned |
 | 11 | iPhone listener | planned |

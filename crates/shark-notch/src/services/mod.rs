@@ -17,8 +17,10 @@ use crate::win::dragdrop::ShelfSlot;
 pub mod audio;
 pub mod calendar;
 pub mod clipboard;
+pub mod downloads;
 pub mod media;
 pub mod notifications;
+pub mod privacy;
 pub mod shelf;
 pub mod store;
 
@@ -32,6 +34,10 @@ pub struct Services {
     notifications: Option<notifications::NotificationsService>,
     store: Option<store::StoreService>,
     calendar: Option<calendar::CalendarService>,
+    privacy: Option<privacy::PrivacyService>,
+    downloads: Option<downloads::DownloadsService>,
+    /// Whether the configuration wants the privacy watcher (it is stopped while suspended).
+    want_privacy: bool,
     /// The shelf worker's inbox, shared with the OLE drop target (empty while the shelf is off).
     shelf_slot: ShelfSlot,
     suspended: bool,
@@ -49,6 +55,9 @@ impl Services {
             notifications: None,
             store: None,
             calendar: None,
+            privacy: None,
+            downloads: None,
+            want_privacy: false,
             shelf_slot: Arc::new(Mutex::new(None)),
             suspended: false,
         }
@@ -141,7 +150,7 @@ impl Services {
         }
 
         // The store serves the modules that keep data between runs.
-        let want_store = cfg.module_active("pomodoro");
+        let want_store = cfg.module_active("pomodoro") || cfg.module_active("live");
         match (want_store, self.store.is_some()) {
             (true, false) => self.store = store::StoreService::start(self.bus.clone()),
             (false, true) => {
@@ -175,6 +184,39 @@ impl Services {
                 }
             }
             (false, false) => {}
+        }
+
+        // The microphone / camera watcher sleeps on a registry notification; it has no timer.
+        self.want_privacy = cfg.module_active("live") && cfg.live.privacy;
+        self.sync_privacy();
+
+        // The Downloads-folder watcher: restarted if the watched folder was changed.
+        let want_downloads = cfg.module_active("live") && cfg.live.downloads;
+        let running_dir = self.downloads.as_ref().map(|d| d.setting().to_string());
+        let changed = running_dir
+            .as_deref()
+            .is_some_and(|d| d != cfg.live.download_dir);
+        if (!want_downloads || changed)
+            && let Some(d) = self.downloads.take()
+        {
+            d.stop();
+        }
+        if want_downloads && self.downloads.is_none() {
+            self.downloads =
+                downloads::DownloadsService::start(&cfg.live.download_dir, self.bus.clone());
+        }
+    }
+
+    /// Start or stop the watcher to match the configuration and the suspended state.
+    fn sync_privacy(&mut self) {
+        match (self.want_privacy && !self.suspended, self.privacy.is_some()) {
+            (true, false) => self.privacy = privacy::PrivacyService::start(self.bus.clone()),
+            (false, true) => {
+                if let Some(p) = self.privacy.take() {
+                    p.stop();
+                }
+            }
+            _ => {}
         }
     }
 
@@ -232,7 +274,9 @@ impl Services {
                 true
             }
             // Handled by the app itself (they need the UI thread or the config path).
-            Command::OpenUrl(_) | Command::OpenConfig | Command::Chime => false,
+            Command::OpenUrl(_) | Command::OpenConfig | Command::Chime | Command::Reveal(_) => {
+                false
+            }
         }
     }
 
@@ -248,6 +292,7 @@ impl Services {
         if let Some(c) = &self.calendar {
             c.suspend(on);
         }
+        self.sync_privacy();
         if on {
             self.audio.stop();
         }
@@ -269,6 +314,12 @@ impl Services {
         }
         if let Some(c) = self.calendar.take() {
             c.stop();
+        }
+        if let Some(p) = self.privacy.take() {
+            p.stop();
+        }
+        if let Some(d) = self.downloads.take() {
+            d.stop();
         }
         // Last: it flushes whatever the modules saved a moment ago.
         if let Some(s) = self.store.take() {

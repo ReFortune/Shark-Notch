@@ -63,6 +63,7 @@ use crate::win::hotkeys::{self, Hotkeys};
 use crate::win::inbox::{self, Msg, WM_APP_WAKE};
 use crate::win::layout::Layout;
 use crate::win::paths;
+use crate::win::reveal;
 use crate::win::sampler::Sampler;
 use crate::win::session::{self, SessionWatch};
 use crate::win::single::{CONTROLLER_CLASS, WM_SECOND_INSTANCE};
@@ -95,6 +96,8 @@ pub struct Options {
     pub config: Option<PathBuf>,
     pub no_exclude: bool,
     pub light_probe: bool,
+    /// Let the self-test write (and remove) a fake microphone-use record in the registry.
+    pub registry_probe: bool,
     pub console: bool,
 }
 
@@ -141,6 +144,8 @@ pub struct App {
     high_surrogate: u16,
     /// The last link a module asked to open (the self-test records it instead of launching a browser).
     pub(crate) last_open_url: Option<Arc<str>>,
+    /// The last "show in folder" request (the self-test records it instead of opening Explorer).
+    pub(crate) last_reveal: Option<Arc<str>>,
     /// The notch's OLE drop target (registered on every stage window while the shelf is active).
     pub(crate) drop_target: Option<windows::Win32::System::Ole::IDropTarget>,
     /// Files the shelf asked to drag out; OLE's modal loop runs from the main loop, outside any borrow.
@@ -376,6 +381,7 @@ impl App {
             kbd_prev: None,
             high_surrogate: 0,
             last_open_url: None,
+            last_reveal: None,
             drop_target: None,
             pending_drag: None,
             press_pos: None,
@@ -1206,6 +1212,13 @@ impl App {
                 self.services.command(&c);
             }
             Command::OpenConfig => self.open_config(),
+            Command::Reveal(path) => {
+                if self.opts.selftest {
+                    self.last_reveal = Some(path.clone());
+                } else {
+                    reveal::reveal(&path);
+                }
+            }
             Command::Chime => {
                 // The self-test must stay quiet on a machine with speakers.
                 if !self.opts.selftest {

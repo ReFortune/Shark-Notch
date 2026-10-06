@@ -38,6 +38,7 @@ mod startup {
                 "--config" => o.config = args.next().map(Into::into),
                 "--no-exclude" => o.no_exclude = true,
                 "--light-probe" => o.light_probe = true,
+                "--registry-probe" => o.registry_probe = true,
                 "--console" => o.console = true,
                 _ => {}
             }

@@ -26,6 +26,7 @@ use windows::Win32::Graphics::Gdi::{GetDC, GetPixel, ReleaseDC};
 
 use crate::app::{App, T_SCRIPT};
 use crate::services::clipboard as clip;
+use crate::services::privacy;
 use crate::win::clock;
 use crate::win::sys::{self, ProcMetrics};
 use crate::win::{dragdrop, paths, textclip};
@@ -106,6 +107,10 @@ pub struct SelfTest {
     frames_mark: u64,
     /// `Calendar` events seen before the calendar act in progress.
     cal_mark: u32,
+    /// The scratch "Downloads" folder of the live-activities scenario, and the bus-event counts
+    /// (`Downloads`, `DownloadDone`) before its acts.
+    dl_dir: Option<std::path::PathBuf>,
+    dl_mark: (u32, u32),
     /// Cycles per second of a busy core (calibrated), for tick-free CPU percentages.
     cycles_hz: f64,
     warm_idle: Option<(f64, f64)>,     // (cpu %, private MiB)
@@ -188,6 +193,29 @@ enum Act {
     PomoAddCheck,
     PomoSaveCheck,
     PomoOff,
+    LivePage,
+    LiveClick,
+    LiveClickCheck,
+    LiveCancel,
+    LiveCancelCheck,
+    LiveClose,
+    LiveTimerLoad,
+    LiveTimerChipCheck,
+    LiveTimerEndCheck,
+    LiveTimerClose,
+    PrivacyOn,
+    PrivacyCheck,
+    PrivacyOff,
+    PrivacyOffCheck,
+    DlSetup,
+    DlCheck,
+    DlGrow,
+    DlGrowCheck,
+    DlFinish,
+    DlFinishCheck,
+    DlShow,
+    DlShowCheck,
+    DlOff,
     Report,
 }
 
@@ -269,7 +297,30 @@ const SCRIPT: &[(f64, Act)] = &[
     (68.8, Act::PomoAddCheck),
     (70.0, Act::PomoSaveCheck),
     (70.2, Act::PomoOff),
-    (70.6, Act::Report),
+    (70.6, Act::LivePage),
+    (72.0, Act::LiveClick),
+    (72.3, Act::LiveClickCheck),
+    (72.4, Act::LiveCancel),
+    (72.7, Act::LiveCancelCheck),
+    (72.8, Act::LiveClose),
+    (73.0, Act::LiveTimerLoad),
+    (73.8, Act::LiveTimerChipCheck),
+    (76.6, Act::LiveTimerEndCheck),
+    (76.8, Act::LiveTimerClose),
+    (77.4, Act::PrivacyOn),
+    (79.4, Act::PrivacyCheck),
+    (79.5, Act::PrivacyOff),
+    (81.5, Act::PrivacyOffCheck),
+    (82.0, Act::DlSetup),
+    (83.8, Act::DlCheck),
+    (83.9, Act::DlGrow),
+    (85.2, Act::DlGrowCheck),
+    (85.3, Act::DlFinish),
+    (86.3, Act::DlFinishCheck),
+    (86.4, Act::DlShow),
+    (86.6, Act::DlShowCheck),
+    (86.8, Act::DlOff),
+    (87.4, Act::Report),
 ];
 
 const CLIP_TEXT: &str = "Selftest clipboard text";
@@ -504,6 +555,8 @@ pub fn begin(a: &mut App) {
         notif_mark: 0,
         frames_mark: 0,
         cal_mark: 0,
+        dl_dir: None,
+        dl_mark: (0, 0),
         cycles_hz: sys::cycles_per_sec(),
         warm_idle: None,
         released_idle: None,
@@ -1412,6 +1465,249 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
             a.collapse(true);
             reconfigure(a, |c| c.pomodoro.enabled = false);
             reconfigure(a, |c| c.pomodoro.enabled = true);
+        }
+        Act::LivePage => match a.host.page_of("live") {
+            Some(p) => {
+                a.shell.set_page(now, p);
+                a.expand(Trigger::Hotkey);
+            }
+            None => st.fail("the live page is not in the ring".into()),
+        },
+        Act::LiveClick => {
+            // The first quick-timer button (1 minute), through the real mouse path.
+            if !click_region(a, 100) {
+                st.fail("live: the page has no quick-timer button".into());
+            }
+        }
+        Act::LiveClickCheck => {
+            let text = drawn_text(a);
+            let row = text.iter().any(|t| t == "1 min");
+            let clock = text
+                .iter()
+                .any(|t| t == "01:00" || t == "00:59" || t == "00:58");
+            st.say(format!(
+                "live: a quick timer started from the page: row '1 min' listed: {row}; its countdown is drawn: {clock}"
+            ));
+            if !row || !clock {
+                st.fail(format!("live: the started timer is not listed: {text:?}"));
+            }
+        }
+        Act::LiveCancel => {
+            if !click_region(a, 200) {
+                st.fail("live: the timer row has no cancel button".into());
+            }
+        }
+        Act::LiveCancelCheck => {
+            let text = drawn_text(a);
+            let gone = !text.iter().any(|t| t == "1 min");
+            st.say(format!("live: cancelling removes the timer: {gone}"));
+            if !gone {
+                st.fail("live: the timer is still listed after cancelling".into());
+            }
+        }
+        Act::LiveClose => a.collapse(true),
+        Act::LiveTimerLoad => {
+            // A timer that ends in 3 s, handed over the way a saved one is (the store's answer):
+            // this exercises restore, the module's own wake-up, the banner and the chime path.
+            let end = unix_now() + 3;
+            let json = format!(
+                "{{\"items\":[{{\"id\":7,\"label\":\"x\",\"end\":{end},\"total\":60}}],\"next_id\":8}}"
+            );
+            a.bus_tx.send(
+                Source::Local,
+                EventKind::StoreLoaded(notch_core::events::StoreItem {
+                    key: "timers".into(),
+                    data: Some(json.into()),
+                }),
+            );
+        }
+        Act::LiveTimerChipCheck => {
+            let text = drawn_text(a);
+            let chip = text.iter().any(|t| t == "1m");
+            a.maybe_release_gpu(now);
+            st.say(format!(
+                "live: a running timer shows a chip on the collapsed pill: {chip}; GPU kept for it: {}",
+                a.stage.is_some()
+            ));
+            if !chip || a.host.chips_width() == 0.0 {
+                st.fail("live: no chip for a running timer".into());
+            }
+            if a.stage.is_none() {
+                st.fail("live: the GPU stack was released while a timer chip is showing".into());
+            }
+        }
+        Act::LiveTimerEndCheck => {
+            let text = drawn_text(a);
+            let banner =
+                a.shell.presence() == Presence::Peek && text.iter().any(|t| t == "Timer finished");
+            st.say(format!(
+                "live: the timer ended by itself (3 s): the banner says so: {banner}; its chip is gone: {}",
+                !text.iter().any(|t| t == "1m")
+            ));
+            if !banner {
+                st.fail(format!("live: no banner when the timer ended: {text:?}"));
+            }
+        }
+        Act::LiveTimerClose => a.collapse(true),
+        Act::PrivacyOn => {
+            if !a.opts.registry_probe {
+                st.say("live: microphone chip skipped (it writes a fake usage record to the registry; pass --registry-probe to run it)".into());
+            } else {
+                privacy::probe::clear();
+                if let Err(e) = privacy::probe::set_usage(privacy::probe::now(), 0) {
+                    st.fail(format!("live: {e}"));
+                }
+            }
+        }
+        Act::PrivacyCheck => {
+            if a.opts.registry_probe {
+                let text = drawn_text(a);
+                let named = text.iter().any(|t| t == privacy::probe::FAKE_NAME);
+                a.maybe_release_gpu(now);
+                st.say(format!(
+                    "live: a program using the microphone (a fake record in Windows' consent store) shows on the pill by name: {named}; GPU kept for it: {}",
+                    a.stage.is_some()
+                ));
+                if !named || a.host.chips_width() == 0.0 {
+                    st.fail(format!(
+                        "live: no privacy chip for a program on the microphone: {text:?}"
+                    ));
+                }
+                if a.stage.is_none() {
+                    st.fail(
+                        "live: the GPU stack was released while the privacy chip is showing".into(),
+                    );
+                }
+            }
+        }
+        Act::PrivacyOff => {
+            if a.opts.registry_probe {
+                privacy::probe::clear();
+            }
+        }
+        Act::PrivacyOffCheck => {
+            if a.opts.registry_probe {
+                a.maybe_release_gpu(now);
+                st.say(format!(
+                    "live: the record was removed: the chip is gone ({}) and the GPU released ({})",
+                    a.host.chips_width() == 0.0,
+                    a.stage.is_none()
+                ));
+                if a.host.chips_width() != 0.0 {
+                    st.fail(
+                        "live: the privacy chip stayed after the microphone was released".into(),
+                    );
+                }
+                if a.stage.is_some() {
+                    st.fail(
+                        "live: the GPU stack was not released after the privacy chip went".into(),
+                    );
+                }
+            }
+        }
+        Act::DlSetup => {
+            // Watch a scratch folder (never the real Downloads folder), write a browser-style
+            // partial file into it.
+            let dir = paths::data_dir().join("Downloads");
+            let _ = std::fs::create_dir_all(&dir);
+            st.dl_mark = (
+                a.bus_counts[Kind::Downloads as usize],
+                a.bus_counts[Kind::DownloadDone as usize],
+            );
+            let setting = dir.to_string_lossy().into_owned();
+            reconfigure(a, |c| c.live.download_dir = setting);
+            if let Err(e) = std::fs::write(dir.join("video.mp4.crdownload"), vec![0x5au8; 1 << 20])
+            {
+                st.fail(format!("live: cannot write the test download ({e})"));
+            }
+            st.dl_dir = Some(dir);
+        }
+        Act::DlCheck => {
+            let got = a.bus_counts[Kind::Downloads as usize] - st.dl_mark.0;
+            let text = drawn_text(a);
+            let chip = text.iter().find(|t| t.contains("MB")).cloned();
+            st.say(format!(
+                "live: a partial file in the watched folder became a download: {got} list update(s); chip text {chip:?}"
+            ));
+            if got == 0 || chip.is_none() || a.host.chips_width() == 0.0 {
+                st.fail(format!(
+                    "live: the download did not reach the pill: {text:?}"
+                ));
+            }
+        }
+        Act::DlGrow => {
+            if let Some(dir) = &st.dl_dir
+                && let Err(e) =
+                    std::fs::write(dir.join("video.mp4.crdownload"), vec![0x5au8; 6 << 20])
+            {
+                st.fail(format!("live: cannot grow the test download ({e})"));
+            }
+        }
+        Act::DlGrowCheck => {
+            let text = drawn_text(a);
+            let chip = text.iter().find(|t| t.contains("MB")).cloned();
+            st.say(format!(
+                "live: the download grew to 6 MiB; the chip follows: {chip:?}"
+            ));
+            let follows = chip
+                .as_deref()
+                .is_some_and(|c| c.starts_with("6.0 MB") || c.ends_with("/s"));
+            if !follows {
+                st.fail(format!(
+                    "live: the chip did not follow the growing download: {text:?}"
+                ));
+            }
+        }
+        Act::DlFinish => {
+            if let Some(dir) = &st.dl_dir
+                && let Err(e) =
+                    std::fs::rename(dir.join("video.mp4.crdownload"), dir.join("video.mp4"))
+            {
+                st.fail(format!("live: cannot finish the test download ({e})"));
+            }
+        }
+        Act::DlFinishCheck => {
+            let done = a.bus_counts[Kind::DownloadDone as usize] - st.dl_mark.1;
+            let text = drawn_text(a);
+            let has = |s: &str| text.iter().any(|t| t == s);
+            let banner = a.shell.presence() == Presence::Peek
+                && has("Download complete")
+                && has("video.mp4")
+                && has("Show");
+            st.say(format!(
+                "live: the browser's rename to the real name is a finished download: {done} completion event(s); banner with the file name, its size ({}) and a Show button: {banner}",
+                has("6.0 MB")
+            ));
+            if done != 1 || !banner || !has("6.0 MB") {
+                st.fail(format!(
+                    "live: no proper banner for the finished download: {text:?}"
+                ));
+            }
+        }
+        Act::DlShow => {
+            if !click_region(a, 900) {
+                st.fail("live: the download banner has no Show region to click".into());
+            }
+        }
+        Act::DlShowCheck => {
+            let want = st
+                .dl_dir
+                .as_ref()
+                .map(|d| d.join("video.mp4").to_string_lossy().into_owned());
+            let got = a.last_reveal.take();
+            st.say(format!(
+                "live: clicking Show asked Explorer to reveal {got:?} (recorded, not executed, in the self-test)"
+            ));
+            if want.as_deref() != got.as_deref() {
+                st.fail(format!("live: Show revealed {got:?}, expected {want:?}"));
+            }
+        }
+        Act::DlOff => {
+            a.collapse(true);
+            reconfigure(a, |c| c.live.download_dir = String::new());
+            if let Some(dir) = st.dl_dir.take() {
+                let _ = std::fs::remove_dir_all(dir);
+            }
         }
         Act::Report => finish(a, st),
     }

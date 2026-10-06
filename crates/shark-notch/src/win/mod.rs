@@ -12,6 +12,7 @@ pub mod imaging;
 pub mod inbox;
 pub mod layout;
 pub mod paths;
+pub mod reveal;
 pub mod sampler;
 pub mod session;
 pub mod shellimg;

@@ -43,11 +43,14 @@ pub enum Icon {
     Reset,
     /// A stopwatch.
     Timer,
+    Mic,
+    /// An arrow down into a tray: a download.
+    Download,
 }
 
 impl Icon {
     /// Every icon, for tests and the preview tool.
-    pub const ALL: [Icon; 26] = [
+    pub const ALL: [Icon; 28] = [
         Icon::Play,
         Icon::Pause,
         Icon::Next,
@@ -74,6 +77,8 @@ impl Icon {
         Icon::Video,
         Icon::Reset,
         Icon::Timer,
+        Icon::Mic,
+        Icon::Download,
     ];
 }
 
@@ -408,6 +413,26 @@ pub fn ops(icon: Icon) -> Vec<IconOp> {
                 Stroke(polyline(&[wing(40.0), tip, wing(-40.0)], false), 2.0),
             ]
         }
+        Icon::Mic => vec![
+            Stroke(rrect_path(8.5, 3.5, 7.0, 11.5, 3.5), 2.0),
+            Stroke(arc_path(12.0, 11.5, 6.6, 90.0, 180.0), 2.0),
+            Stroke(polyline(&[(12.0, 18.1), (12.0, 21.0)], false), 2.0),
+            Stroke(polyline(&[(8.5, 21.0), (15.5, 21.0)], false), 2.0),
+        ],
+        Icon::Download => vec![
+            Stroke(polyline(&[(12.0, 3.5), (12.0, 14.5)], false), 2.0),
+            Stroke(
+                polyline(&[(7.5, 10.5), (12.0, 15.0), (16.5, 10.5)], false),
+                2.0,
+            ),
+            Stroke(
+                polyline(
+                    &[(4.0, 15.5), (4.0, 20.0), (20.0, 20.0), (20.0, 15.5)],
+                    false,
+                ),
+                2.0,
+            ),
+        ],
         Icon::Timer => vec![
             Stroke(circle_path(12.0, 13.5, 7.5), 2.0),
             Stroke(polyline(&[(12.0, 13.5), (12.0, 9.5)], false), 2.0),

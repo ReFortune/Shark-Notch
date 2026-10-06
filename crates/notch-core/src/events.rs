@@ -94,6 +94,30 @@ pub struct CalendarData {
     pub error: Option<Arc<str>>,
 }
 
+/// Which programs are using the microphone / camera right now (friendly names, sorted, unique).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PrivacyState {
+    pub mic: Vec<Arc<str>>,
+    pub camera: Vec<Arc<str>>,
+}
+
+/// A download in progress (a browser's partial file that is growing).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActiveDownload {
+    pub name: Arc<str>,
+    pub bytes: u64,
+    pub speed_bps: u64,
+}
+
+/// A download that completed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DownloadDone {
+    pub name: Arc<str>,
+    /// Full path of the finished file (for "show in folder").
+    pub path: Arc<str>,
+    pub bytes: u64,
+}
+
 /// A value read back from the small persistent store (`None` = nothing saved under that key yet).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoreItem {
@@ -194,6 +218,11 @@ pub enum EventKind {
     Calendar(Arc<CalendarData>),
     /// A value the store service read from disk (answer to `StoreCmd::Load`).
     StoreLoaded(StoreItem),
+    /// The set of programs using the microphone / camera changed.
+    Privacy(Arc<PrivacyState>),
+    /// The downloads in progress (sent whenever they change, a couple of times a second at most).
+    Downloads(Arc<Vec<ActiveDownload>>),
+    DownloadDone(DownloadDone),
 }
 
 /// Fieldless mirror of [`EventKind`], used for subscription masks.
@@ -215,10 +244,13 @@ pub enum Kind {
     MediaChanged,
     Calendar,
     StoreLoaded,
+    Privacy,
+    Downloads,
+    DownloadDone,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 15] = [
+    pub const ALL: [Kind; 18] = [
         Kind::ConfigChanged,
         Kind::ThemeChanged,
         Kind::Suspended,
@@ -234,6 +266,9 @@ impl Kind {
         Kind::MediaChanged,
         Kind::Calendar,
         Kind::StoreLoaded,
+        Kind::Privacy,
+        Kind::Downloads,
+        Kind::DownloadDone,
     ];
 }
 
@@ -255,6 +290,9 @@ impl EventKind {
             EventKind::MediaChanged(_) => Kind::MediaChanged,
             EventKind::Calendar(_) => Kind::Calendar,
             EventKind::StoreLoaded(_) => Kind::StoreLoaded,
+            EventKind::Privacy(_) => Kind::Privacy,
+            EventKind::Downloads(_) => Kind::Downloads,
+            EventKind::DownloadDone(_) => Kind::DownloadDone,
         }
     }
 }
@@ -340,6 +378,13 @@ mod tests {
             EventKind::StoreLoaded(StoreItem {
                 key: "k".into(),
                 data: None,
+            }),
+            EventKind::Privacy(Arc::new(PrivacyState::default())),
+            EventKind::Downloads(Arc::new(Vec::new())),
+            EventKind::DownloadDone(DownloadDone {
+                name: "a.zip".into(),
+                path: "C:\\a.zip".into(),
+                bytes: 1,
             }),
         ]
     }

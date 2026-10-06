@@ -109,6 +109,8 @@ pub enum Command {
     OpenConfig,
     /// Play the system's "asterisk" sound (a timer finished).
     Chime,
+    /// Show a file in Explorer (never opens or runs it).
+    Reveal(Arc<str>),
     Media(MediaCmd),
     Clipboard(ClipCmd),
     Shelf(ShelfCmd),

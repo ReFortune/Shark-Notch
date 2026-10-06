@@ -437,6 +437,37 @@ impl Default for PomodoroCfg {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+pub struct LiveCfg {
+    pub enabled: bool,
+    /// Show a chip while a program is using the microphone or the camera.
+    pub privacy: bool,
+    /// Show browser downloads in progress (and a banner when one finishes).
+    pub downloads: bool,
+    /// The folder watched for downloads; empty = your Downloads folder.
+    pub download_dir: String,
+    /// Quick-timer buttons, in minutes (at most six).
+    pub timer_presets: Vec<u32>,
+    /// The system chime when a timer ends (never over a fullscreen app).
+    pub sound: bool,
+    pub peek_secs: f32,
+}
+
+impl Default for LiveCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            privacy: true,
+            downloads: true,
+            download_dir: String::new(),
+            timer_presets: vec![1, 5, 10, 15, 30, 60],
+            sound: true,
+            peek_secs: 6.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Modules {
     /// Page order. Unknown ids are ignored; modules that are disabled are skipped.
     pub order: Vec<String>,
@@ -452,6 +483,7 @@ impl Default for Modules {
                 "notifications".into(),
                 "calendar".into(),
                 "pomodoro".into(),
+                "live".into(),
                 "clock".into(),
             ],
         }
@@ -475,6 +507,7 @@ pub struct Config {
     pub notifications: NotificationsCfg,
     pub calendar: CalendarCfg,
     pub pomodoro: PomodoroCfg,
+    pub live: LiveCfg,
     pub clock: ClockCfg,
 }
 
@@ -780,6 +813,7 @@ impl Config {
             "notifications" => self.notifications.enabled,
             "calendar" => self.calendar.enabled,
             "pomodoro" => self.pomodoro.enabled,
+            "live" => self.live.enabled,
             _ => false,
         };
         enabled && self.modules.order.iter().any(|m| m == id)
@@ -871,7 +905,7 @@ show_missed_indicator = true
 peek_over_fullscreen = false
 
 [modules]
-order = ["media", "clipboard", "shelf", "notifications", "calendar", "pomodoro", "clock"]   # page order; a module that is disabled in its own section is skipped
+order = ["media", "clipboard", "shelf", "notifications", "calendar", "pomodoro", "live", "clock"]   # page order; a module that is disabled in its own section is skipped
 
 [media]
 enabled = true                 # follows whatever Windows considers the current media session
@@ -919,6 +953,15 @@ long_break_every = 4
 auto_start_breaks = true
 auto_start_focus = false
 sound = true                   # the system chime when a session or break ends (never over a fullscreen app)
+peek_secs = 6.0
+
+[live]
+enabled = true
+privacy = true                 # a chip while a program is using the microphone or camera (read from Windows' own usage records)
+downloads = true               # browser downloads in progress, and a banner when one finishes
+download_dir = ""              # empty = your Downloads folder
+timer_presets = [1, 5, 10, 15, 30, 60]   # quick timers, in minutes (at most six)
+sound = true                   # the system chime when a timer ends (never over a fullscreen app)
 peek_secs = 6.0
 
 [clock]

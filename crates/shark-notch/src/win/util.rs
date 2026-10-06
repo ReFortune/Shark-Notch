@@ -1,7 +1,8 @@
 //! Small helpers shared by the Win32 wrappers.
 
-use windows::Win32::Foundation::E_FAIL;
+use windows::Win32::Foundation::{CloseHandle, E_FAIL, HANDLE};
 use windows::Win32::System::SystemInformation::GetLocalTime;
+use windows::Win32::System::Threading::CreateEventW;
 use windows::core::{Error, PCWSTR};
 
 /// UTF-16, NUL-terminated.
@@ -17,6 +18,31 @@ pub fn pcwstr(buf: &[u16]) -> PCWSTR {
 pub fn from_wide(buf: &[u16]) -> String {
     let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
     String::from_utf16_lossy(&buf[..end])
+}
+
+/// A kernel event handle that may be signalled from any thread and is closed on drop. Services use
+/// one to tell their worker thread to quit.
+pub struct EventHandle(pub HANDLE);
+
+// SAFETY: a kernel handle is just an id; the event APIs are thread-safe.
+unsafe impl Send for EventHandle {}
+unsafe impl Sync for EventHandle {}
+
+impl EventHandle {
+    /// An initially non-signalled event; `manual_reset` events stay signalled until reset.
+    pub fn new(manual_reset: bool) -> Option<EventHandle> {
+        unsafe { CreateEventW(None, manual_reset, false, PCWSTR::null()) }
+            .ok()
+            .map(EventHandle)
+    }
+}
+
+impl Drop for EventHandle {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
 }
 
 pub fn fail(msg: &str) -> Error {
