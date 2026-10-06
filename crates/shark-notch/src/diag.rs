@@ -1598,8 +1598,8 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
             }
         }
         Act::PrivacyOff => {
-            if a.opts.registry_probe {
-                privacy::probe::clear();
+            if a.opts.registry_probe && !privacy::probe::clear() {
+                st.fail("live: the fake microphone record could not be removed".into());
             }
         }
         Act::PrivacyOffCheck => {

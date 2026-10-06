@@ -297,7 +297,7 @@ fn run(bus: BusSender, quit: &EventHandle) {
 pub mod probe {
     use super::*;
     use windows::Win32::System::Registry::{
-        KEY_WRITE, REG_OPTION_NON_VOLATILE, RegCreateKeyExW, RegDeleteTreeW, RegSetValueExW,
+        KEY_WRITE, REG_OPTION_NON_VOLATILE, RegCreateKeyExW, RegDeleteKeyW, RegSetValueExW,
     };
 
     /// The key under `microphone\NonPackaged` (a path with `\` written as `#`).
@@ -352,23 +352,25 @@ pub mod probe {
         }
     }
 
-    /// Remove the fake program's key (and nothing else).
-    pub fn clear() {
-        let parent = wide(&class_path());
-        let sub = wide(FAKE_KEY);
+    /// Remove the fake program's key (and nothing else). Returns whether it is gone.
+    ///
+    /// Deleted by its full path from `HKCU` with `RegDeleteKeyW`: the handle's access rights do not
+    /// matter there, and the key has values but no sub-keys. (An earlier version opened the parent
+    /// with `KEY_WRITE` and used `RegDeleteTreeW`, which needs more rights and failed silently, so
+    /// the fake "in use" record stayed.) If it still cannot be deleted, it is at least marked as
+    /// stopped, so it never reads as a program that is using the microphone.
+    pub fn clear() -> bool {
+        let path = format!("{}\\{FAKE_KEY}", class_path());
+        let w = wide(&path);
         unsafe {
-            let mut k = HKEY::default();
-            if ok(RegOpenKeyExW(
-                HKEY_CURRENT_USER,
-                PCWSTR(parent.as_ptr()),
-                None,
-                KEY_WRITE,
-                &mut k,
-            )) {
-                let _ = RegDeleteTreeW(k, PCWSTR(sub.as_ptr()));
-                let _ = RegCloseKey(k);
-            }
+            let _ = RegDeleteKeyW(HKEY_CURRENT_USER, PCWSTR(w.as_ptr()));
         }
+        let gone = Key::open(HKEY_CURRENT_USER, &path, false).is_none();
+        if !gone {
+            let t = now_ticks();
+            let _ = set_usage(t.saturating_sub(10_000_000), t);
+        }
+        gone
     }
 }
 
@@ -425,7 +427,7 @@ mod tests {
         assert!(gone.is_some(), "and goes away when it stops");
 
         svc.stop();
-        clear();
+        assert!(clear(), "the probe key is removed again");
     }
 
     #[test]
@@ -444,6 +446,6 @@ mod tests {
             "the new watcher publishes what it finds, even if it equals nothing it said before"
         );
         second.stop();
-        clear();
+        assert!(clear(), "the probe key is removed again");
     }
 }
