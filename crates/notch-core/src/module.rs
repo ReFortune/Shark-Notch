@@ -85,14 +85,36 @@ pub enum NotifCmd {
     Recheck,
 }
 
+/// Operations on the calendar feeds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CalCmd {
+    /// Fetch the feeds now (the page was opened and the data is stale).
+    Refresh,
+}
+
+/// Operations on the small persistent store (one JSON document per key, under the app's data folder).
+#[derive(Clone, Debug, PartialEq)]
+pub enum StoreCmd {
+    /// Read `key`; the answer arrives as a `StoreLoaded` event.
+    Load(&'static str),
+    /// Replace `key` (written shortly after, off the UI thread). Keys are `[a-z0-9_-]` only.
+    Save { key: &'static str, data: Arc<str> },
+}
+
 /// Things a module asks the platform to do. Modules never call the OS themselves.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     OpenUrl(Arc<str>),
+    /// Open the configuration file in the user's editor.
+    OpenConfig,
+    /// Play the system's "asterisk" sound (a timer finished).
+    Chime,
     Media(MediaCmd),
     Clipboard(ClipCmd),
     Shelf(ShelfCmd),
     Notifications(NotifCmd),
+    Calendar(CalCmd),
+    Store(StoreCmd),
 }
 
 /// Requests that concern the shell itself.
@@ -120,6 +142,9 @@ pub enum Audio {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Env {
     pub local: LocalTime,
+    /// Current UTC time, whole seconds since 1970-01-01 (a wall clock: it also counts time spent
+    /// asleep, which is what a timer the user set in minutes of real time wants).
+    pub unix: i64,
     /// The user's regional preference for 24-hour time.
     pub system_24h: bool,
     /// Sampled by the platform **only while a module asks for continuous frames** (`wants_frames`).
@@ -130,6 +155,7 @@ impl Default for Env {
     fn default() -> Self {
         Env {
             local: LocalTime::default(),
+            unix: 0,
             system_24h: true,
             audio: Audio::Idle,
         }
@@ -145,6 +171,8 @@ pub struct Out {
     pub redraw: bool,
     /// Earliest time (monotonic seconds) a redraw is wanted even if nothing else happens.
     pub redraw_at: Option<f64>,
+    /// A module asked for (`true`) or gave up (`false`) keyboard focus.
+    pub keyboard: Option<(ModuleId, bool)>,
 }
 
 /// Context handed to non-drawing calls.
@@ -203,6 +231,13 @@ impl<'a> Cx<'a> {
         });
     }
 
+    /// Ask for keyboard input (`Input::Char` / `Input::Key`) while a text field is being edited. The
+    /// platform makes the window focusable only for as long as this is on; give it up (`false`) as
+    /// soon as editing ends. Input is delivered to the module that asked.
+    pub fn request_keyboard(&mut self, on: bool) {
+        self.out.keyboard = Some((self.module, on));
+    }
+
     /// Ask the shell to open on this module's page.
     pub fn request_expand(&mut self) {
         self.out.shell.push(ShellRequest::Expand {
@@ -255,6 +290,15 @@ pub trait Module {
         0
     }
 
+    /// Called once, right after the host created the module: restore saved state, ask for data.
+    fn on_start(&mut self, _cx: &mut Cx) {}
+    /// The monotonic time (seconds) at which `on_tick` should run, **whether or not the module is
+    /// visible** (a meeting about to start, a timer about to finish). `None` = no wake-up needed. Keep
+    /// it cheap; it is asked after every host call.
+    fn next_wake(&self, _now: f64, _env: &Env) -> Option<f64> {
+        None
+    }
+    fn on_tick(&mut self, _cx: &mut Cx) {}
     fn on_event(&mut self, _ev: &Event, _cx: &mut Cx) {}
     fn on_poll(&mut self, _cx: &mut Cx) {}
     fn on_visibility(&mut self, _v: Visibility, _cx: &mut Cx) {}
@@ -265,6 +309,11 @@ pub trait Module {
     fn on_resume(&mut self, _cx: &mut Cx) {}
     /// Return `true` if the input was consumed.
     fn on_input(&mut self, _hit: Option<HitId>, _input: &Input, _cx: &mut Cx) -> bool {
+        false
+    }
+    /// Pointer input over this module's peek banner (it is click-through until the pointer enters
+    /// it). Return `true` if consumed; an unconsumed click opens the module's page.
+    fn on_peek_input(&mut self, _hit: Option<HitId>, _input: &Input, _cx: &mut Cx) -> bool {
         false
     }
 
@@ -288,10 +337,15 @@ struct Entry {
     loaded: bool,
     poisoned: bool,
     next_poll: Option<f64>,
+    started: bool,
+    /// When `on_tick` last ran (guards against a module that keeps asking for a past wake-up).
+    last_tick: f64,
 }
 
 /// How long a module may stay hidden before `on_unload` is called.
 pub const UNLOAD_AFTER: f64 = 30.0;
+/// Least time between two `on_tick` calls of one module.
+const MIN_TICK_GAP: f64 = 0.25;
 /// Chip layout metrics (DIPs).
 pub const CHIP_PAD: f32 = 12.0;
 pub const CHIP_GAP: f32 = 10.0;
@@ -407,10 +461,36 @@ impl ModuleHost {
                     loaded: false,
                     poisoned: false,
                     next_poll: None,
+                    started: false,
+                    last_tick: f64::NEG_INFINITY,
                 });
             }
         }
         // Whatever remains in `old` was disabled or removed from the order: dropped here.
+    }
+
+    /// Run `on_start` for modules created since the last call. The platform calls this after it has
+    /// given the host a context (start-up and after every configuration reload).
+    pub fn start_new(&mut self) {
+        for i in 0..self.entries.len() {
+            if self.entries[i].started {
+                continue;
+            }
+            self.entries[i].started = true;
+            let ctx = Ctx {
+                now: self.now,
+                env: &self.env,
+                theme: &self.theme,
+                config: &self.config,
+            };
+            call(
+                &mut self.entries[i],
+                &ctx,
+                &mut self.out,
+                &mut self.poisoned,
+                |m, cx| m.on_start(cx),
+            );
+        }
     }
 
     // ----- pages ------------------------------------------------------------------------------
@@ -543,11 +623,16 @@ impl ModuleHost {
         });
     }
 
-    /// Earliest time a visible+expanded module wants polling, or an unload is due.
+    /// Earliest time something needs the host: a visible+expanded module's poll, a module's own
+    /// wake-up (`next_wake`), or an unload.
     pub fn next_deadline(&self) -> Option<f64> {
         let mut best: Option<f64> = None;
         let mut take = |t: f64| best = Some(best.map_or(t, |b: f64| b.min(t)));
         for e in self.entries.iter().filter(|e| !e.poisoned) {
+            if let Some(t) = e.module.next_wake(self.now, &self.env) {
+                // A module that keeps naming a moment that has passed must not make the loop spin.
+                take(t.max(e.last_tick + MIN_TICK_GAP));
+            }
             if e.vis == Visibility::Expanded
                 && let Some(t) = e.next_poll
             {
@@ -576,6 +661,17 @@ impl ModuleHost {
             let e = &mut self.entries[i];
             if e.poisoned {
                 continue;
+            }
+            if let Some(t) = e.module.next_wake(now, &self.env)
+                && now >= t.max(e.last_tick + MIN_TICK_GAP)
+            {
+                e.last_tick = now;
+                call(e, &ctx, &mut self.out, &mut self.poisoned, |m, cx| {
+                    m.on_tick(cx)
+                });
+                if e.poisoned {
+                    continue;
+                }
             }
             if e.vis == Visibility::Expanded
                 && let Some(t) = e.next_poll
@@ -655,6 +751,50 @@ impl ModuleHost {
             &mut self.out,
             &mut self.poisoned,
             |m, cx| m.on_input(hit, input, cx),
+        )
+        .unwrap_or(false)
+    }
+
+    /// Route pointer input over a peek banner to the module that owns it (`owner` is the id the
+    /// shell reports in its frame). Returns whether it was consumed.
+    pub fn peek_input(&mut self, owner: u32, hit: Option<HitId>, input: &Input) -> bool {
+        let i = owner as usize;
+        if i >= self.entries.len() {
+            return false;
+        }
+        let ctx = Ctx {
+            now: self.now,
+            env: &self.env,
+            theme: &self.theme,
+            config: &self.config,
+        };
+        call(
+            &mut self.entries[i],
+            &ctx,
+            &mut self.out,
+            &mut self.poisoned,
+            |m, cx| m.on_peek_input(hit, input, cx),
+        )
+        .unwrap_or(false)
+    }
+
+    /// Deliver typed input to the module that asked for the keyboard.
+    pub fn keyboard_input(&mut self, id: ModuleId, input: &Input) -> bool {
+        let Some(i) = self.entries.iter().position(|e| e.id == id) else {
+            return false;
+        };
+        let ctx = Ctx {
+            now: self.now,
+            env: &self.env,
+            theme: &self.theme,
+            config: &self.config,
+        };
+        call(
+            &mut self.entries[i],
+            &ctx,
+            &mut self.out,
+            &mut self.poisoned,
+            |m, cx| m.on_input(None, input, cx),
         )
         .unwrap_or(false)
     }
@@ -776,6 +916,11 @@ impl ModuleHost {
             .map(|i| i as u32)
     }
 
+    /// The module a peek `owner` id (as reported by the shell's frame) belongs to.
+    pub fn owner_id(&self, owner: u32) -> Option<ModuleId> {
+        self.entries.get(owner as usize).map(|e| e.id)
+    }
+
     /// Centre of an expanded page area, handy for tests of hit routing.
     pub fn page_center(area: Rect) -> Vec2 {
         area.center()
@@ -800,6 +945,9 @@ mod tests {
         configs: u32,
         inputs: Vec<Option<HitId>>,
         suspended: u32,
+        starts: u32,
+        ticks: u32,
+        peek_inputs: u32,
     }
 
     struct Fake {
@@ -815,6 +963,8 @@ mod tests {
         panic_on_event: bool,
         panic_on_draw: bool,
         emit_on_event: bool,
+        wake: Option<f64>,
+        keyboard_on_start: bool,
     }
 
     impl Fake {
@@ -832,6 +982,8 @@ mod tests {
                 panic_on_event: false,
                 panic_on_draw: false,
                 emit_on_event: false,
+                wake: None,
+                keyboard_on_start: false,
             }
         }
     }
@@ -878,6 +1030,23 @@ mod tests {
             if self.emit_on_event {
                 cx.emit(Source::Local, EventKind::ThemeChanged);
             }
+        }
+        fn on_start(&mut self, cx: &mut Cx) {
+            self.log.borrow_mut().starts += 1;
+            if self.keyboard_on_start {
+                cx.request_keyboard(true);
+            }
+        }
+        fn next_wake(&self, _now: f64, _env: &Env) -> Option<f64> {
+            self.wake
+        }
+        fn on_tick(&mut self, _cx: &mut Cx) {
+            self.log.borrow_mut().ticks += 1;
+            // Deliberately leaves `wake` in the past: the host must not spin on it.
+        }
+        fn on_peek_input(&mut self, hit: Option<HitId>, _i: &Input, _cx: &mut Cx) -> bool {
+            self.log.borrow_mut().peek_inputs += 1;
+            hit.is_some()
         }
         fn on_poll(&mut self, cx: &mut Cx) {
             self.log.borrow_mut().polls += 1;
@@ -932,6 +1101,8 @@ mod tests {
                 loaded: false,
                 poisoned: false,
                 next_poll: None,
+                started: false,
+                last_tick: f64::NEG_INFINITY,
             });
         }
         h
@@ -939,6 +1110,92 @@ mod tests {
 
     fn ev(source: Source, kind: EventKind) -> Event {
         Event::new(source, kind)
+    }
+
+    #[test]
+    fn on_start_runs_once_per_module() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let mut h = host_with(vec![Fake::new("a", &log)]);
+        h.start_new();
+        h.start_new();
+        assert_eq!(log.borrow().starts, 1);
+        // A module added by a later configuration reload is started too, the old one is not again.
+        h.entries.push(Entry {
+            id: "b",
+            module: Box::new(Fake::new("b", &log)),
+            vis: Visibility::Hidden,
+            hidden_since: Some(0.0),
+            loaded: false,
+            poisoned: false,
+            next_poll: None,
+            started: false,
+            last_tick: f64::NEG_INFINITY,
+        });
+        h.start_new();
+        assert_eq!(log.borrow().starts, 2);
+    }
+
+    #[test]
+    fn a_modules_own_wake_up_drives_the_deadline_and_ticks_even_when_hidden() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let mut f = Fake::new("a", &log);
+        f.wake = Some(50.0);
+        let mut h = host_with(vec![f]);
+        h.set_context(10.0, Env::default());
+        assert_eq!(h.next_deadline(), Some(50.0));
+        h.tick();
+        assert_eq!(log.borrow().ticks, 0, "not due yet");
+        h.set_context(50.0, Env::default());
+        h.tick();
+        assert_eq!(log.borrow().ticks, 1, "due while the module is hidden");
+    }
+
+    #[test]
+    fn a_module_naming_a_past_wake_up_cannot_make_the_loop_spin() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let mut f = Fake::new("a", &log);
+        f.wake = Some(5.0); // forever in the past: the fake never advances it
+        let mut h = host_with(vec![f]);
+        h.set_context(100.0, Env::default());
+        h.tick();
+        assert_eq!(log.borrow().ticks, 1);
+        // The next deadline is pushed out instead of being "now" again.
+        let next = h.next_deadline().unwrap();
+        assert!(next >= 100.0 + MIN_TICK_GAP - 1e-9, "{next}");
+        h.set_context(100.1, Env::default());
+        h.tick();
+        assert_eq!(log.borrow().ticks, 1, "throttled");
+        h.set_context(100.3, Env::default());
+        h.tick();
+        assert_eq!(log.borrow().ticks, 2);
+    }
+
+    #[test]
+    fn peek_and_keyboard_input_reach_the_right_module() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let mut h = host_with(vec![Fake::new("a", &log), Fake::new("b", &log)]);
+        let owner = h.peek_owner("b").unwrap();
+        assert!(h.peek_input(owner, Some(HitId(1)), &Input::Click(Vec2::ZERO)));
+        assert!(!h.peek_input(owner, None, &Input::Click(Vec2::ZERO)));
+        assert_eq!(log.borrow().peek_inputs, 2);
+        assert!(!h.peek_input(99, None, &Input::Leave), "unknown owner");
+        assert!(!h.keyboard_input("nope", &Input::Char('x')));
+        h.keyboard_input("a", &Input::Char('x'));
+        assert_eq!(
+            log.borrow().inputs,
+            vec![None],
+            "delivered without a hit region"
+        );
+    }
+
+    #[test]
+    fn a_module_can_ask_for_the_keyboard() {
+        let log = Rc::new(RefCell::new(Log::default()));
+        let mut f = Fake::new("a", &log);
+        f.keyboard_on_start = true;
+        let mut h = host_with(vec![f]);
+        h.start_new();
+        assert_eq!(h.take_out().keyboard, Some(("a", true)));
     }
 
     #[test]
@@ -1421,6 +1678,8 @@ mod tests {
             loaded: false,
             poisoned: false,
             next_poll: None,
+            started: false,
+            last_tick: f64::NEG_INFINITY,
         });
         h.dispatch(vec![ev(
             Source::Local,

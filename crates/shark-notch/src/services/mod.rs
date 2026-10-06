@@ -15,10 +15,12 @@ use notch_core::module::Command;
 use crate::win::dragdrop::ShelfSlot;
 
 pub mod audio;
+pub mod calendar;
 pub mod clipboard;
 pub mod media;
 pub mod notifications;
 pub mod shelf;
+pub mod store;
 
 pub struct Services {
     bus: BusSender,
@@ -28,6 +30,8 @@ pub struct Services {
     clipboard: Option<clipboard::ClipboardService>,
     shelf: Option<shelf::ShelfService>,
     notifications: Option<notifications::NotificationsService>,
+    store: Option<store::StoreService>,
+    calendar: Option<calendar::CalendarService>,
     /// The shelf worker's inbox, shared with the OLE drop target (empty while the shelf is off).
     shelf_slot: ShelfSlot,
     suspended: bool,
@@ -43,6 +47,8 @@ impl Services {
             clipboard: None,
             shelf: None,
             notifications: None,
+            store: None,
+            calendar: None,
             shelf_slot: Arc::new(Mutex::new(None)),
             suspended: false,
         }
@@ -133,6 +139,43 @@ impl Services {
             }
             (false, false) => {}
         }
+
+        // The store serves the modules that keep data between runs.
+        let want_store = cfg.module_active("pomodoro");
+        match (want_store, self.store.is_some()) {
+            (true, false) => self.store = store::StoreService::start(self.bus.clone()),
+            (false, true) => {
+                if let Some(s) = self.store.take() {
+                    s.stop();
+                }
+            }
+            _ => {}
+        }
+
+        // Calendar feeds are only fetched when the module is on and a feed is configured.
+        let want_cal = cfg.module_active("calendar") && !cfg.calendar.feeds.is_empty();
+        match (want_cal, self.calendar.is_some()) {
+            (true, false) => {
+                self.calendar =
+                    calendar::CalendarService::start(cfg.calendar.clone(), self.bus.clone());
+                if self.suspended
+                    && let Some(c) = &self.calendar
+                {
+                    c.suspend(true);
+                }
+            }
+            (false, true) => {
+                if let Some(c) = self.calendar.take() {
+                    c.stop();
+                }
+            }
+            (true, true) => {
+                if let Some(c) = &self.calendar {
+                    c.configure(cfg.calendar.clone());
+                }
+            }
+            (false, false) => {}
+        }
     }
 
     pub fn shelf_slot(&self) -> ShelfSlot {
@@ -176,7 +219,20 @@ impl Services {
                 }
                 true
             }
-            Command::OpenUrl(_) => false,
+            Command::Calendar(c) => {
+                if let Some(s) = &self.calendar {
+                    s.command(*c);
+                }
+                true
+            }
+            Command::Store(c) => {
+                if let Some(s) = &self.store {
+                    s.command(c);
+                }
+                true
+            }
+            // Handled by the app itself (they need the UI thread or the config path).
+            Command::OpenUrl(_) | Command::OpenConfig | Command::Chime => false,
         }
     }
 
@@ -187,6 +243,9 @@ impl Services {
             m.suspend(on);
         }
         if let Some(c) = &self.clipboard {
+            c.suspend(on);
+        }
+        if let Some(c) = &self.calendar {
             c.suspend(on);
         }
         if on {
@@ -207,6 +266,13 @@ impl Services {
         }
         if let Some(n) = self.notifications.take() {
             n.stop();
+        }
+        if let Some(c) = self.calendar.take() {
+            c.stop();
+        }
+        // Last: it flushes whatever the modules saved a moment ago.
+        if let Some(s) = self.store.take() {
+            s.stop();
         }
     }
 }

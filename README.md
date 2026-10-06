@@ -93,7 +93,7 @@ locked, display-off or a fullscreen app is foreground.
 | 4 | Clipboard history (text, links, images; pin; re-copy) | implemented |
 | 5 | File shelf (OLE drop target, drag out) | implemented — real drag-and-drop needs your hardware |
 | 6 | Windows notifications (banner, list, missed badge) | implemented — needs a one-off identity step and your hardware, see [`docs/NOTIFICATIONS.md`](docs/NOTIFICATIONS.md) |
-| 7 | Calendar + Pomodoro | planned |
+| 7 | Calendar (ICS feeds, month view, Join banner, countdown chip) + Pomodoro with tasks | implemented — real feeds and typing need your machine, see [`docs/CALENDAR_AND_FOCUS.md`](docs/CALENDAR_AND_FOCUS.md) |
 | 8 | Live activities | planned |
 | 9 | System stats | planned |
 | 10 | Command centre | planned |

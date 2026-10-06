@@ -212,6 +212,7 @@ mod tests {
     fn at(h: u32, mi: u32, s: u32) -> Env {
         Env {
             local: LocalTime::new(2026, 10, 6, h, mi, s),
+            unix: 0,
             system_24h: true,
             audio: Audio::Idle,
         }
@@ -373,6 +374,7 @@ mod tests {
                 &mut c,
                 &Env {
                     local: LocalTime::new(2026, 10, 7, 10, 16, 30),
+                    unix: 0,
                     system_24h: true,
                     audio: Audio::Idle
                 }

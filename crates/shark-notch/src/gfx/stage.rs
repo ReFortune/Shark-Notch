@@ -305,6 +305,12 @@ impl Stage {
         window::set_ex_flag(self.hwnd, WS_EX_TRANSPARENT, on);
     }
 
+    /// Allow the window to take the keyboard focus (only while a text field is being edited), or
+    /// forbid it again. Everything else about the window stays as it was.
+    pub fn set_focusable(&mut self, on: bool) {
+        window::set_ex_flag(self.hwnd, WS_EX_NOACTIVATE, !on);
+    }
+
     /// Limit hit-testing to `rect` (window-local pixels). `None` removes the limit.
     pub fn set_hit_region(&self, rect: Option<RECT>) {
         unsafe {

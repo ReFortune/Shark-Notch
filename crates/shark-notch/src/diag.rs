@@ -104,6 +104,8 @@ pub struct SelfTest {
     notif_mark: u32,
     /// Frames presented when the summary banner was checked.
     frames_mark: u64,
+    /// `Calendar` events seen before the calendar act in progress.
+    cal_mark: u32,
     /// Cycles per second of a busy core (calibrated), for tick-free CPU percentages.
     cycles_hz: f64,
     warm_idle: Option<(f64, f64)>,     // (cpu %, private MiB)
@@ -167,6 +169,25 @@ enum Act {
     NotifOpenCheck,
     NotifClose,
     NotifReleaseCheck,
+    CalSetup,
+    CalCheck,
+    CalJoin,
+    CalJoinCheck,
+    CalPage,
+    CalPageCheck,
+    CalClose,
+    CalChipCheck,
+    CalOff,
+    PomoSetup,
+    PomoPage,
+    PomoStart,
+    PomoRunCheck,
+    PomoEndCheck,
+    PomoAddOpen,
+    PomoAdd,
+    PomoAddCheck,
+    PomoSaveCheck,
+    PomoOff,
     Report,
 }
 
@@ -229,7 +250,26 @@ const SCRIPT: &[(f64, Act)] = &[
     (52.1, Act::NotifOpenCheck),
     (52.2, Act::NotifClose),
     (53.8, Act::NotifReleaseCheck),
-    (54.2, Act::Report),
+    (54.4, Act::CalSetup),
+    (56.0, Act::CalCheck),
+    (56.2, Act::CalJoin),
+    (56.5, Act::CalJoinCheck),
+    (56.6, Act::CalPage),
+    (58.1, Act::CalPageCheck),
+    (58.2, Act::CalClose),
+    (59.6, Act::CalChipCheck),
+    (59.8, Act::CalOff),
+    (60.4, Act::PomoSetup),
+    (60.6, Act::PomoPage),
+    (62.1, Act::PomoStart),
+    (62.6, Act::PomoRunCheck),
+    (66.8, Act::PomoEndCheck),
+    (67.0, Act::PomoAddOpen),
+    (68.5, Act::PomoAdd),
+    (68.8, Act::PomoAddCheck),
+    (70.0, Act::PomoSaveCheck),
+    (70.2, Act::PomoOff),
+    (70.6, Act::Report),
 ];
 
 const CLIP_TEXT: &str = "Selftest clipboard text";
@@ -345,6 +385,45 @@ fn embedded_manifest() -> Option<String> {
     }
 }
 
+/// `YYYYMMDDTHHMMSSZ` for a Unix time.
+fn ics_stamp(unix: i64) -> String {
+    let (y, mo, d, h, mi, s) = notch_core::civil::civil_from_unix(unix);
+    format!("{y:04}{mo:02}{d:02}T{h:02}{mi:02}{s:02}Z")
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
+}
+
+/// A real mouse click on the region `id` of the last frame, through the app's own mouse handler.
+fn click_region(a: &mut App, id: u32) -> bool {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE};
+    let Some(region) = a.list.hits.iter().find(|h| h.id.0 == id).map(|h| h.rect) else {
+        return false;
+    };
+    let c = region.center();
+    let ppd = a.layout.px_per_dip;
+    let (x, y) = ((c.x * ppd).round() as isize, (c.y * ppd).round() as isize);
+    let lp = LPARAM(((y & 0xFFFF) << 16) | (x & 0xFFFF));
+    a.on_stage_mouse(WM_MOUSEMOVE, WPARAM(0), lp);
+    a.on_stage_mouse(WM_LBUTTONDOWN, WPARAM(1), lp);
+    a.on_stage_mouse(WM_LBUTTONUP, WPARAM(0), lp);
+    true
+}
+
+/// Apply a modified copy of the running configuration (as if the user had edited the file).
+fn reconfigure(a: &mut App, edit: impl FnOnce(&mut notch_core::config::Config)) {
+    let mut cfg = a.cfg.clone();
+    edit(&mut cfg);
+    a.apply_config(notch_core::config::Loaded {
+        config: cfg,
+        warnings: Vec::new(),
+    });
+}
+
 fn clip_events(a: &App) -> u32 {
     a.bus_counts[Kind::ClipboardItem as usize]
 }
@@ -424,6 +503,7 @@ pub fn begin(a: &mut App) {
         shelf_dir: None,
         notif_mark: 0,
         frames_mark: 0,
+        cal_mark: 0,
         cycles_hz: sys::cycles_per_sec(),
         warm_idle: None,
         released_idle: None,
@@ -1112,6 +1192,226 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
                         .into(),
                 );
             }
+        }
+        Act::CalSetup => {
+            // A real feed file: the whole chain (service -> time zone -> bus -> module) is exercised.
+            let now = unix_now();
+            let today = sys::local_time();
+            let ics = format!(
+                "BEGIN:VCALENDAR\r\nVERSION:2.0\r\n\
+                 BEGIN:VEVENT\r\nUID:st-1\r\nDTSTART:{}\r\nDURATION:PT20M\r\nSUMMARY:Selftest meeting\r\nLOCATION:https://meet.google.com/abc-defg-hij\r\nEND:VEVENT\r\n\
+                 BEGIN:VEVENT\r\nUID:st-2\r\nDTSTART:{}\r\nDURATION:PT30M\r\nRRULE:FREQ=DAILY;COUNT=5\r\nSUMMARY:Selftest daily\r\nEND:VEVENT\r\n\
+                 BEGIN:VEVENT\r\nUID:st-3\r\nDTSTART;VALUE=DATE:{:04}{:02}{:02}\r\nSUMMARY:Selftest all-day\r\nEND:VEVENT\r\n\
+                 END:VCALENDAR\r\n",
+                ics_stamp(now + 150),
+                ics_stamp(now + 3 * 3600),
+                today.year,
+                today.month,
+                today.day
+            );
+            let path = paths::data_dir().join("selftest.ics");
+            let _ = std::fs::write(&path, ics);
+            st.cal_mark = a.bus_counts[Kind::Calendar as usize];
+            let feed = path.to_string_lossy().into_owned();
+            reconfigure(a, |c| c.calendar.feeds = vec![feed]);
+        }
+        Act::CalCheck => {
+            let got = a.bus_counts[Kind::Calendar as usize] - st.cal_mark;
+            let text = drawn_text(a);
+            let banner = a.shell.presence() == Presence::Peek
+                && text.iter().any(|t| t == "Selftest meeting");
+            let join = a.list.hits.iter().any(|h| h.id.0 == 300);
+            let chip = a.host.chips_width() > 0.0;
+            st.say(format!(
+                "calendar: {got} refresh(es) from the feed file; banner for the meeting (5 min lead): {banner}; Join button in it: {join}; chip on the pill: {chip}"
+            ));
+            if got == 0 {
+                st.fail("calendar: the service never published the feed".into());
+            }
+            if !banner || !join {
+                st.fail(
+                    "calendar: no banner with a Join button for a meeting 2 minutes away".into(),
+                );
+            }
+            if !chip {
+                st.fail("calendar: no countdown chip for a meeting starting soon".into());
+            }
+        }
+        Act::CalJoin => {
+            if !click_region(a, 300) {
+                st.fail("calendar: the banner has no Join region to click".into());
+            }
+        }
+        Act::CalJoinCheck => {
+            let opened = a.last_open_url.take();
+            st.say(format!("calendar: clicking Join asked to open {opened:?}"));
+            if opened.as_deref() != Some("https://meet.google.com/abc-defg-hij") {
+                st.fail("calendar: Join did not open the meeting link".into());
+            }
+        }
+        Act::CalPage => match a.host.page_of("calendar") {
+            Some(p) => {
+                a.shell.set_page(now, p);
+                a.expand(Trigger::Hotkey);
+            }
+            None => st.fail("the calendar page is not in the ring".into()),
+        },
+        Act::CalPageCheck => {
+            let text = drawn_text(a);
+            let t = sys::local_time();
+            let month = format!(
+                "{} {}",
+                notch_core::civil::MONTHS[t.month as usize - 1],
+                t.year
+            );
+            let has = |s: &str| text.iter().any(|x| x == s);
+            let joins = a
+                .list
+                .hits
+                .iter()
+                .filter(|h| (200..210).contains(&h.id.0))
+                .count();
+            let cells = a
+                .list
+                .hits
+                .iter()
+                .filter(|h| (100..142).contains(&h.id.0))
+                .count();
+            st.say(format!(
+                "calendar: page shows '{month}': {}; agenda lists the meeting: {}, the daily series: {}, the all-day event: {}; {cells} day cells, {joins} Join button(s)",
+                has(&month),
+                has("Selftest meeting"),
+                has("Selftest daily"),
+                has("Selftest all-day")
+            ));
+            if !has(&month) || !has("Selftest meeting") || !has("Selftest all-day") {
+                st.fail("calendar: the page does not show the month and today's events".into());
+            }
+            if cells != 42 || joins == 0 {
+                st.fail("calendar: the grid or the Join button is missing".into());
+            }
+        }
+        Act::CalClose => a.collapse(true),
+        Act::CalChipCheck => {
+            let text = drawn_text(a);
+            let chip = text.iter().find(|t| {
+                *t == "now"
+                    || t.strip_suffix('m')
+                        .is_some_and(|n| n.parse::<u32>().is_ok())
+            });
+            a.maybe_release_gpu(now);
+            st.say(format!(
+                "calendar: the collapsed pill shows a countdown chip: {chip:?}; GPU kept for it: {}",
+                a.stage.is_some()
+            ));
+            if chip.is_none() {
+                st.fail("calendar: the collapsed pill shows no countdown".into());
+            }
+            if a.stage.is_none() {
+                st.fail("calendar: the GPU stack was released while a chip is on the pill".into());
+            }
+        }
+        Act::CalOff => {
+            reconfigure(a, |c| c.calendar.feeds.clear());
+            let _ = std::fs::remove_file(paths::data_dir().join("selftest.ics"));
+        }
+        Act::PomoSetup => reconfigure(a, |c| {
+            c.pomodoro.focus_minutes = 0.05;
+            c.pomodoro.short_break_minutes = 0.05;
+            c.pomodoro.auto_start_breaks = true;
+            c.pomodoro.sound = false;
+        }),
+        Act::PomoPage => match a.host.page_of("pomodoro") {
+            Some(p) => {
+                a.shell.set_page(now, p);
+                a.expand(Trigger::Hotkey);
+            }
+            None => st.fail("the pomodoro page is not in the ring".into()),
+        },
+        Act::PomoStart => {
+            // Play, through the real mouse path; then look at the pill.
+            if !click_region(a, 1) {
+                st.fail("pomodoro: the page has no play button".into());
+            }
+            a.collapse(true);
+        }
+        Act::PomoRunCheck => {
+            let text = drawn_text(a);
+            let chip = text.iter().any(|t| t == "1m");
+            st.say(format!(
+                "pomodoro: a running session shows a chip with the minutes left: {chip}; pill chips width {:.0} DIP",
+                a.host.chips_width()
+            ));
+            if !chip || a.host.chips_width() == 0.0 {
+                st.fail("pomodoro: no chip while the timer runs".into());
+            }
+        }
+        Act::PomoEndCheck => {
+            let text = drawn_text(a);
+            let banner = text.iter().any(|t| t == "Focus session complete");
+            st.say(format!(
+                "pomodoro: the session ended by itself (3 s in this test): the banner says so: {banner} (presence {:?})",
+                a.shell.presence()
+            ));
+            if !banner {
+                st.fail("pomodoro: no banner when the focus session ended".into());
+            }
+        }
+        Act::PomoAddOpen => match a.host.page_of("pomodoro") {
+            Some(p) => {
+                a.shell.set_page(now, p);
+                a.expand(Trigger::Hotkey);
+            }
+            None => st.fail("the pomodoro page is not in the ring".into()),
+        },
+        Act::PomoAdd => {
+            // Click "Add task", then type through the same handlers the window messages use.
+            if !click_region(a, 4) {
+                st.fail("pomodoro: the page has no Add task field".into());
+            }
+            let asked = a.kbd_owner == Some("pomodoro");
+            if !asked {
+                st.fail("pomodoro: clicking Add task did not ask for the keyboard".into());
+            }
+            for c in "Ship the selftest ".encode_utf16() {
+                a.on_char(u32::from(c));
+            }
+            // A character outside the BMP arrives as two surrogates.
+            for u in "🦈".encode_utf16() {
+                a.on_char(u32::from(u));
+            }
+            let enter = a.on_keydown(0x0D);
+            st.say(format!(
+                "pomodoro: Add task took the keyboard ({asked}); Enter handled ({enter}); keyboard given back: {}",
+                a.kbd_owner.is_none()
+            ));
+            if a.kbd_owner.is_some() {
+                st.fail("pomodoro: the keyboard was not given back after Enter".into());
+            }
+        }
+        Act::PomoAddCheck => {
+            let text = drawn_text(a);
+            let listed = text.iter().any(|t| t == "Ship the selftest 🦈");
+            st.say(format!("pomodoro: the typed task is in the list: {listed}"));
+            if !listed {
+                st.fail(format!("pomodoro: the typed task is not listed: {text:?}"));
+            }
+        }
+        Act::PomoSaveCheck => {
+            let path = paths::data_dir().join("pomodoro.json");
+            match std::fs::read_to_string(&path) {
+                Ok(json) if json.contains("Ship the selftest") => st.say(format!(
+                    "pomodoro: the task list was saved to pomodoro.json ({} bytes) a moment after the change",
+                    json.len()
+                )),
+                Ok(_) => st.fail("pomodoro: pomodoro.json does not contain the task".into()),
+                Err(e) => st.fail(format!("pomodoro: nothing was saved ({e})")),
+            }
+        }
+        Act::PomoOff => {
+            a.collapse(true);
+            reconfigure(a, |c| c.pomodoro.enabled = false);
+            reconfigure(a, |c| c.pomodoro.enabled = true);
         }
         Act::Report => finish(a, st),
     }

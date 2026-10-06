@@ -57,6 +57,14 @@ mod startup {
         unsafe {
             let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         }
+        // The self-test works in a scratch folder: it must never read or overwrite a real user's
+        // saved data (pins, tasks) and it runs with the default configuration.
+        if opts.selftest {
+            let dir = std::env::temp_dir().join("SharkNotch-selftest");
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::create_dir_all(&dir);
+            paths::set_data_dir(dir);
+        }
         crate::log::init(
             &paths::log_path(),
             crate::log::Level::Info,

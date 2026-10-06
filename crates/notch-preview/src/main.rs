@@ -21,8 +21,8 @@ use notch_core::config::Config;
 use notch_core::demo;
 use notch_core::draw::{Canvas, DrawList, ImageId};
 use notch_core::events::{
-    ClipKind, ClipboardItem, Event, EventKind, FileEntry, MediaSnapshot, Notification,
-    NotificationAccess, Source,
+    CalEvent, CalendarData, ClipKind, ClipboardItem, Event, EventKind, FileEntry, MediaSnapshot,
+    Notification, NotificationAccess, Source, StoreItem,
 };
 use notch_core::geom::{Rect, Vec2};
 use notch_core::module::{Env, ModuleHost};
@@ -198,16 +198,15 @@ fn fake_art() -> tiny_skia::Pixmap {
 /// The real [`ModuleHost`] with the default config and a made-up media session: chips, every page
 /// expanding, the peek banners.
 fn modules_sheet(out: &str, theme: Theme) {
-    let mut host = ModuleHost::new(
-        modules::registry(),
-        std::sync::Arc::new(Config::default()),
-        theme,
-    );
+    let mut cfg = Config::default();
+    cfg.calendar.feeds = vec!["https://example.com/team.ics".into()];
+    let mut host = ModuleHost::new(modules::registry(), std::sync::Arc::new(cfg), theme);
     // A fixed moment so the output is reproducible: Tuesday 6 October 2026, 14:05:09.
     host.set_context(
         0.0,
         Env {
             local: LocalTime::new(2026, 10, 6, 14, 5, 9),
+            unix: notch_core::civil::unix_from_civil(2026, 10, 6, 14, 5, 9),
             system_24h: true,
             audio: notch_core::module::Audio::Level(0.7),
         },
@@ -399,6 +398,63 @@ fn modules_sheet(out: &str, theme: Theme) {
         0,
         true,
     )]);
+    // Calendar: a day of meetings around 14:05, one starting in three minutes with a call link.
+    let unix = notch_core::civil::unix_from_civil;
+    let cal = |title: &str, (h, m): (u32, u32), mins: i64, join: bool, day: u32, feed: u8| {
+        let start = unix(2026, 10, day, h, m, 0);
+        CalEvent {
+            title: title.into(),
+            location: "".into(),
+            start_utc: start,
+            end_utc: start + mins * 60,
+            start_local: start,
+            end_local: start + mins * 60,
+            all_day: false,
+            join_url: join.then(|| "https://meet.google.com/abc-defg-hij".into()),
+            feed,
+        }
+    };
+    let mut holiday = cal("Public holiday", (0, 0), 0, false, 12, 1);
+    holiday.all_day = true;
+    holiday.end_local = holiday.start_local + 86_400;
+    host.dispatch(vec![Event::new(
+        Source::Local,
+        EventKind::Calendar(std::sync::Arc::new(CalendarData {
+            events: vec![
+                cal("Standup", (9, 30), 15, true, 6, 0),
+                cal("Design review", (14, 8), 45, true, 6, 0),
+                cal("1:1 with Priya", (16, 0), 30, false, 6, 1),
+                cal("Dentist", (17, 30), 60, false, 6, 2),
+                cal("Sprint planning", (10, 0), 90, true, 8, 0),
+                cal("Lunch with Sam", (12, 30), 60, false, 9, 1),
+                holiday,
+                cal("Team offsite", (9, 0), 480, false, 14, 0),
+            ],
+            fetched_unix: unix(2026, 10, 6, 14, 0, 0),
+            feeds: 1,
+            failed: 0,
+            error: None,
+        })),
+    )]);
+    // Pomodoro: a focus session in progress with a few tasks, then it ends and a break begins.
+    let now = unix(2026, 10, 6, 14, 5, 9);
+    let saved = format!(
+        r#"{{"timer":{{"phase":"Focus","end":{},"left":1500,"cycle":2}},"todos":{{"items":[
+            {{"id":1,"title":"Write the notch design notes","done":false,"sessions":2}},
+            {{"id":2,"title":"Review the calendar parser","done":false,"sessions":1}},
+            {{"id":3,"title":"Reply to Priya","done":false,"sessions":0}},
+            {{"id":4,"title":"Book the dentist","done":true,"sessions":0}}],
+            "next_id":5,"current":1}},"day":{},"sessions":3}}"#,
+        now + 1112,
+        notch_core::civil::days_from_civil(2026, 10, 6)
+    );
+    host.dispatch(vec![Event::new(
+        Source::Local,
+        EventKind::StoreLoaded(StoreItem {
+            key: "pomodoro".into(),
+            data: Some(saved.into()),
+        }),
+    )]);
     let _ = host.take_out();
     let pages = host.pages();
     let mut shell = Shell::new(ShellConfig::default());
@@ -425,6 +481,18 @@ fn modules_sheet(out: &str, theme: Theme) {
         shell.collapse(t);
         run(&mut shell, &mut t, 0.6);
     }
+    // The focus session ends 20 minutes on (the break starts by itself): its banner and chip.
+    host.set_context(
+        1200.0,
+        Env {
+            local: LocalTime::new(2026, 10, 6, 14, 25, 30),
+            unix: unix(2026, 10, 6, 14, 25, 30),
+            system_24h: true,
+            audio: notch_core::module::Audio::Idle,
+        },
+    );
+    host.tick();
+    let _ = host.take_out();
     for id in host.module_ids() {
         if let (Some(owner), Some(size)) = (host.peek_owner(id), host.peek_size(id)) {
             shell.peek(t, owner, size, 5.0);

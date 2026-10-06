@@ -373,6 +373,70 @@ impl Default for NotificationsCfg {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+pub struct CalendarCfg {
+    pub enabled: bool,
+    /// ICS calendar feeds: `https://` / `webcal://` links or paths of `.ics` files.
+    pub feeds: Vec<String>,
+    /// How often the feeds are read again, in minutes.
+    pub refresh_minutes: u32,
+    pub week_starts_monday: bool,
+    /// A banner (with a Join button if the event has a call link) this many minutes before an event
+    /// starts, and again as it starts. 0 = no banner.
+    pub alert_minutes: u32,
+    /// The collapsed pill shows a countdown for an event starting within this many minutes. 0 = never.
+    pub chip_minutes: u32,
+    /// How long such a banner stays, in seconds.
+    pub peek_secs: f32,
+}
+
+impl Default for CalendarCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            feeds: Vec::new(),
+            refresh_minutes: 30,
+            week_starts_monday: true,
+            alert_minutes: 5,
+            chip_minutes: 15,
+            peek_secs: 8.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PomodoroCfg {
+    pub enabled: bool,
+    pub focus_minutes: f32,
+    pub short_break_minutes: f32,
+    pub long_break_minutes: f32,
+    /// A long break after this many focus sessions.
+    pub long_break_every: u32,
+    pub auto_start_breaks: bool,
+    pub auto_start_focus: bool,
+    /// Play the system chime when a session or break ends (never while a fullscreen app is in front).
+    pub sound: bool,
+    pub peek_secs: f32,
+}
+
+impl Default for PomodoroCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            focus_minutes: 25.0,
+            short_break_minutes: 5.0,
+            long_break_minutes: 15.0,
+            long_break_every: 4,
+            auto_start_breaks: true,
+            auto_start_focus: false,
+            sound: true,
+            peek_secs: 6.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Modules {
     /// Page order. Unknown ids are ignored; modules that are disabled are skipped.
     pub order: Vec<String>,
@@ -386,6 +450,8 @@ impl Default for Modules {
                 "clipboard".into(),
                 "shelf".into(),
                 "notifications".into(),
+                "calendar".into(),
+                "pomodoro".into(),
                 "clock".into(),
             ],
         }
@@ -407,6 +473,8 @@ pub struct Config {
     pub clipboard: ClipboardCfg,
     pub shelf: ShelfCfg,
     pub notifications: NotificationsCfg,
+    pub calendar: CalendarCfg,
+    pub pomodoro: PomodoroCfg,
     pub clock: ClockCfg,
 }
 
@@ -583,6 +651,63 @@ impl Config {
             w,
         );
         clamp_u(
+            &mut self.calendar.refresh_minutes,
+            5,
+            1440,
+            "calendar.refresh_minutes",
+            w,
+        );
+        clamp_u(
+            &mut self.calendar.alert_minutes,
+            0,
+            120,
+            "calendar.alert_minutes",
+            w,
+        );
+        clamp_u(
+            &mut self.calendar.chip_minutes,
+            0,
+            240,
+            "calendar.chip_minutes",
+            w,
+        );
+        clamp_f(
+            &mut self.calendar.peek_secs,
+            2.0,
+            30.0,
+            "calendar.peek_secs",
+            w,
+        );
+        self.calendar.feeds.retain(|f| !f.trim().is_empty());
+        self.calendar.feeds.truncate(8);
+        for (v, name) in [
+            (&mut self.pomodoro.focus_minutes, "pomodoro.focus_minutes"),
+            (
+                &mut self.pomodoro.short_break_minutes,
+                "pomodoro.short_break_minutes",
+            ),
+            (
+                &mut self.pomodoro.long_break_minutes,
+                "pomodoro.long_break_minutes",
+            ),
+        ] {
+            clamp_f(v, 0.05, 600.0, name, w);
+        }
+        clamp_u(
+            &mut self.pomodoro.long_break_every,
+            1,
+            12,
+            "pomodoro.long_break_every",
+            w,
+        );
+        clamp_f(
+            &mut self.pomodoro.peek_secs,
+            2.0,
+            30.0,
+            "pomodoro.peek_secs",
+            w,
+        );
+        clamp_u(
             &mut self.clipboard.max_items,
             5,
             200,
@@ -653,6 +778,8 @@ impl Config {
             "clipboard" => self.clipboard.enabled,
             "shelf" => self.shelf.enabled,
             "notifications" => self.notifications.enabled,
+            "calendar" => self.calendar.enabled,
+            "pomodoro" => self.pomodoro.enabled,
             _ => false,
         };
         enabled && self.modules.order.iter().any(|m| m == id)
@@ -744,7 +871,7 @@ show_missed_indicator = true
 peek_over_fullscreen = false
 
 [modules]
-order = ["media", "clipboard", "shelf", "notifications", "clock"]   # page order; a module that is disabled in its own section is skipped
+order = ["media", "clipboard", "shelf", "notifications", "calendar", "pomodoro", "clock"]   # page order; a module that is disabled in its own section is skipped
 
 [media]
 enabled = true                 # follows whatever Windows considers the current media session
@@ -773,6 +900,26 @@ peek_secs = 4.0
 max_items = 20
 ignore_apps = []               # e.g. ["Spotify", "Steam"]
 dismiss_in_windows = false     # true: dismissing here also clears it from the Windows notification centre
+
+[calendar]
+enabled = true
+feeds = []                     # ICS feeds: "https://…/basic.ics", "webcal://…", or a path to an .ics file. The link is a secret: keep this file private.
+refresh_minutes = 30           # the feeds are read again this often (and when the page opens while stale)
+week_starts_monday = true
+alert_minutes = 5              # a banner (with Join, if the event has a call link) this long before a start, and at the start; 0 = off
+chip_minutes = 15              # a countdown in the collapsed pill for an event starting within this long; 0 = off
+peek_secs = 8.0
+
+[pomodoro]
+enabled = true
+focus_minutes = 25.0
+short_break_minutes = 5.0
+long_break_minutes = 15.0
+long_break_every = 4
+auto_start_breaks = true
+auto_start_focus = false
+sound = true                   # the system chime when a session or break ends (never over a fullscreen app)
+peek_secs = 6.0
 
 [clock]
 enabled = true

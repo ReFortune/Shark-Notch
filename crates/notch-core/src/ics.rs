@@ -1103,6 +1103,84 @@ fn start_wall(w: &When) -> i64 {
     }
 }
 
+// ----- where a feed lives -----------------------------------------------------------------------------
+
+/// What a configured feed string means.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FeedLocation {
+    /// An `https://` (or `webcal://`) link, split for the HTTP client.
+    Https {
+        host: String,
+        port: u16,
+        /// Path and query, starting with `/`.
+        path: String,
+    },
+    /// A file on this computer.
+    File(String),
+    Rejected(&'static str),
+}
+
+/// Interpret a `calendar.feeds` entry. Only encrypted links are fetched: a feed URL is a secret
+/// (it is what grants read access to the calendar), so it never travels over plain `http://`.
+pub fn parse_feed_location(raw: &str) -> FeedLocation {
+    let s = raw.trim().trim_matches('"').trim();
+    if s.is_empty() {
+        return FeedLocation::Rejected("empty");
+    }
+    let lower = s.to_ascii_lowercase();
+    let rest = if let Some(r) = lower.strip_prefix("https://") {
+        &s[s.len() - r.len()..]
+    } else if let Some(r) = lower
+        .strip_prefix("webcals://")
+        .or_else(|| lower.strip_prefix("webcal://"))
+    {
+        &s[s.len() - r.len()..]
+    } else if lower.starts_with("http://") {
+        return FeedLocation::Rejected(
+            "plain http links are not used (the feed URL is a secret): use https",
+        );
+    } else if lower.starts_with("file://") {
+        return FeedLocation::File(s[7..].trim_start_matches('/').to_string());
+    } else if let Some(pos) = s.find("://") {
+        // Some other kind of link (but a drive path such as `C:\x` has no "://").
+        return if pos > 1 {
+            FeedLocation::Rejected("unsupported link type")
+        } else {
+            FeedLocation::File(s.to_string())
+        };
+    } else {
+        return FeedLocation::File(s.to_string());
+    };
+    let rest = rest.split('#').next().unwrap_or("");
+    let (authority, path) = match rest.find(['/', '?']) {
+        Some(i) if rest.as_bytes()[i] == b'/' => (&rest[..i], rest[i..].to_string()),
+        Some(i) => (&rest[..i], format!("/{}", &rest[i..])),
+        None => (rest, "/".to_string()),
+    };
+    if authority.is_empty() || authority.contains(['@', ' ', '\\', '[']) {
+        return FeedLocation::Rejected("not a valid host");
+    }
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((h, p)) => match p.parse::<u16>() {
+            Ok(port) if port != 0 => (h, port),
+            _ => return FeedLocation::Rejected("not a valid port"),
+        },
+        None => (authority, 443),
+    };
+    let host_ok = !host.is_empty()
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_');
+    if !host_ok {
+        return FeedLocation::Rejected("not a valid host");
+    }
+    FeedLocation::Https {
+        host: host.to_ascii_lowercase(),
+        port,
+        path,
+    }
+}
+
 // ----- join links -------------------------------------------------------------------------------------
 
 /// Hosts a "Join" button may open. A calendar feed contains text written by other people, so only
@@ -1672,6 +1750,73 @@ mod tests {
         ));
         let o = cal.occurrences(day(2026, 1, 1), day(2032, 1, 1), &Z0, 100);
         assert_eq!(o.len(), 1);
+    }
+
+    #[test]
+    fn feed_locations_are_https_links_or_files() {
+        use FeedLocation::*;
+        let https = |h: &str, p: u16, path: &str| Https {
+            host: h.into(),
+            port: p,
+            path: path.into(),
+        };
+        assert_eq!(
+            parse_feed_location(
+                "https://calendar.google.com/calendar/ical/x%40y/private-abc/basic.ics"
+            ),
+            https(
+                "calendar.google.com",
+                443,
+                "/calendar/ical/x%40y/private-abc/basic.ics"
+            )
+        );
+        assert_eq!(
+            parse_feed_location("  \"WEBCAL://Example.com:8443/a.ics?token=1#frag\" "),
+            https("example.com", 8443, "/a.ics?token=1")
+        );
+        assert_eq!(
+            parse_feed_location("webcals://example.com"),
+            https("example.com", 443, "/")
+        );
+        assert_eq!(
+            parse_feed_location("https://example.com?x=1"),
+            https("example.com", 443, "/?x=1")
+        );
+        assert_eq!(
+            parse_feed_location(r"C:\Users\me\cal.ics"),
+            File(r"C:\Users\me\cal.ics".into())
+        );
+        assert_eq!(
+            parse_feed_location(r"\\nas\share\cal.ics"),
+            File(r"\\nas\share\cal.ics".into())
+        );
+        assert_eq!(
+            parse_feed_location("calendar.ics"),
+            File("calendar.ics".into())
+        );
+        assert_eq!(
+            parse_feed_location("file:///C:/cal.ics"),
+            File("C:/cal.ics".into())
+        );
+        for bad in [
+            "http://example.com/a.ics",
+            "ftp://example.com/a.ics",
+            "https://",
+            "https://user@example.com/a.ics",
+            "https://exa mple.com/",
+            "https://example.com:0/",
+            "https://example.com:99999/",
+            "https://[::1]/",
+            r"https://exa\mple.com/",
+            "",
+            "   ",
+        ] {
+            assert!(
+                matches!(parse_feed_location(bad), Rejected(_)),
+                "{bad:?} -> {:?}",
+                parse_feed_location(bad)
+            );
+        }
     }
 
     #[test]

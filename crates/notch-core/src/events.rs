@@ -65,6 +65,42 @@ pub enum NotificationAccess {
     NoIdentity,
 }
 
+/// One calendar event instance, with its times both as UTC instants and as the local wall clock.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CalEvent {
+    pub title: Arc<str>,
+    pub location: Arc<str>,
+    pub start_utc: i64,
+    pub end_utc: i64,
+    /// Local wall-clock seconds (as if UTC) of the start and end; all-day events are local midnights.
+    pub start_local: i64,
+    pub end_local: i64,
+    pub all_day: bool,
+    /// A link to the video call, only ever on a known conferencing host.
+    pub join_url: Option<Arc<str>>,
+    /// Index of the configured feed it came from.
+    pub feed: u8,
+}
+
+/// What the calendar service knows after a refresh (events sorted by start).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CalendarData {
+    pub events: Vec<CalEvent>,
+    /// When it was fetched (UTC seconds); 0 = never.
+    pub fetched_unix: i64,
+    /// Feeds configured / feeds that could not be read in this refresh.
+    pub feeds: u32,
+    pub failed: u32,
+    pub error: Option<Arc<str>>,
+}
+
+/// A value read back from the small persistent store (`None` = nothing saved under that key yet).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoreItem {
+    pub key: Arc<str>,
+    pub data: Option<Arc<str>>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileEntry {
     pub id: u64,
@@ -154,6 +190,10 @@ pub enum EventKind {
     Battery(BatteryInfo),
     FocusChanged(FocusInfo),
     MediaChanged(Arc<MediaSnapshot>),
+    /// A fresh read of the calendar feeds.
+    Calendar(Arc<CalendarData>),
+    /// A value the store service read from disk (answer to `StoreCmd::Load`).
+    StoreLoaded(StoreItem),
 }
 
 /// Fieldless mirror of [`EventKind`], used for subscription masks.
@@ -173,10 +213,12 @@ pub enum Kind {
     Battery,
     FocusChanged,
     MediaChanged,
+    Calendar,
+    StoreLoaded,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 13] = [
+    pub const ALL: [Kind; 15] = [
         Kind::ConfigChanged,
         Kind::ThemeChanged,
         Kind::Suspended,
@@ -190,6 +232,8 @@ impl Kind {
         Kind::Battery,
         Kind::FocusChanged,
         Kind::MediaChanged,
+        Kind::Calendar,
+        Kind::StoreLoaded,
     ];
 }
 
@@ -209,6 +253,8 @@ impl EventKind {
             EventKind::Battery(_) => Kind::Battery,
             EventKind::FocusChanged(_) => Kind::FocusChanged,
             EventKind::MediaChanged(_) => Kind::MediaChanged,
+            EventKind::Calendar(_) => Kind::Calendar,
+            EventKind::StoreLoaded(_) => Kind::StoreLoaded,
         }
     }
 }
@@ -290,6 +336,11 @@ mod tests {
                 active: true,
             }),
             EventKind::MediaChanged(Arc::new(MediaSnapshot::default())),
+            EventKind::Calendar(Arc::new(CalendarData::default())),
+            EventKind::StoreLoaded(StoreItem {
+                key: "k".into(),
+                data: None,
+            }),
         ]
     }
 

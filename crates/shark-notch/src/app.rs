@@ -5,6 +5,8 @@
 //! pending. The swap chain's frame-latency handle is added to the wait set **only while animating**,
 //! so an idle notch costs no wake-ups beyond the 10 Hz cursor sample.
 
+mod kbd;
+
 use std::cell::RefCell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
@@ -21,7 +23,7 @@ use notch_core::geom::{Rect, Size, Vec2};
 use notch_core::hover::{Cadence, HoverAction, HoverFsm, HoverParams};
 use notch_core::image::ImageCache;
 use notch_core::input::Input;
-use notch_core::module::{Audio, Command, Env, ModuleHost, ShelfCmd, ShellRequest};
+use notch_core::module::{Audio, Command, Env, ModuleHost, ModuleId, ShelfCmd, ShellRequest};
 use notch_core::modules;
 use notch_core::raster;
 use notch_core::sched::{Scheduler, TimerId};
@@ -30,6 +32,7 @@ use notch_core::theme::Theme;
 use std::sync::Arc;
 use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, RECT, WAIT_OBJECT_0, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWM_TIMING_INFO, DwmGetCompositionTimingInfo};
+use windows::Win32::System::Diagnostics::Debug::MessageBeep;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     ReleaseCapture, SetCapture, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
 };
@@ -37,12 +40,13 @@ use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, DestroyWindow, DispatchMessageW, EVENT_OBJECT_LOCATIONCHANGE,
     EVENT_SYSTEM_FOREGROUND, HTCLIENT, HTTRANSPARENT, IDC_ARROW, IDC_HAND, IDC_IBEAM, LoadCursorW,
-    MA_NOACTIVATE, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx, PM_REMOVE, PeekMessageW,
-    PostQuitMessage, QS_ALLINPUT, RegisterWindowMessageW, SW_SHOWNORMAL, SetCursor,
-    TranslateMessage, WM_CONTEXTMENU, WM_DESTROY, WM_DISPLAYCHANGE, WM_DWMCOLORIZATIONCOLORCHANGED,
-    WM_ENDSESSION, WM_ERASEBKGND, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE,
-    WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCHITTEST, WM_PAINT, WM_QUIT, WM_RBUTTONUP,
-    WM_SETCURSOR, WM_SETTINGCHANGE, WS_EX_TOOLWINDOW, WS_POPUP,
+    MA_NOACTIVATE, MB_ICONASTERISK, MSG, MWMO_INPUTAVAILABLE, MsgWaitForMultipleObjectsEx,
+    PM_REMOVE, PeekMessageW, PostQuitMessage, QS_ALLINPUT, RegisterWindowMessageW, SW_SHOWNORMAL,
+    SetCursor, TranslateMessage, WM_CHAR, WM_CONTEXTMENU, WM_DESTROY, WM_DISPLAYCHANGE,
+    WM_DWMCOLORIZATIONCOLORCHANGED, WM_ENDSESSION, WM_ERASEBKGND, WM_HOTKEY, WM_KEYDOWN,
+    WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_NCHITTEST, WM_PAINT, WM_QUIT, WM_RBUTTONUP, WM_SETCURSOR, WM_SETTINGCHANGE,
+    WS_EX_TOOLWINDOW, WS_POPUP,
 };
 use windows::core::PCWSTR;
 
@@ -130,6 +134,13 @@ pub struct App {
     pub(crate) last_files: Option<Vec<notch_core::events::FileEntry>>,
     /// The most recent `NotificationAccess` from the notifications service (self-test reads it).
     pub(crate) last_notif_access: Option<notch_core::events::NotificationAccess>,
+    /// The module that has the keyboard (a text field is being edited), the window that had the focus
+    /// before, and a pending high surrogate of a typed character (see `app/kbd.rs`).
+    pub(crate) kbd_owner: Option<ModuleId>,
+    kbd_prev: Option<HWND>,
+    high_surrogate: u16,
+    /// The last link a module asked to open (the self-test records it instead of launching a browser).
+    pub(crate) last_open_url: Option<Arc<str>>,
     /// The notch's OLE drop target (registered on every stage window while the shelf is active).
     pub(crate) drop_target: Option<windows::Win32::System::Ole::IDropTarget>,
     /// Files the shelf asked to drag out; OLE's modal loop runs from the main loop, outside any borrow.
@@ -294,7 +305,13 @@ impl App {
     fn new(ctrl: HWND, opts: Options) -> Result<App, String> {
         let config_path = opts.config.clone().unwrap_or_else(paths::config_path);
         let mut warnings = Vec::new();
-        let cfg = match std::fs::read_to_string(&config_path) {
+        // The self-test runs the defaults (unless told which file), whatever the user has configured.
+        let cfg_text = if opts.selftest && opts.config.is_none() {
+            Ok(notch_core::config::DEFAULT_TOML.to_string())
+        } else {
+            std::fs::read_to_string(&config_path)
+        };
+        let cfg = match cfg_text {
             Ok(text) => match Config::parse(&text) {
                 Ok(l) => {
                     warnings = l.warnings;
@@ -355,6 +372,10 @@ impl App {
             last_clip: None,
             last_files: None,
             last_notif_access: None,
+            kbd_owner: None,
+            kbd_prev: None,
+            high_surrogate: 0,
+            last_open_url: None,
             drop_target: None,
             pending_drag: None,
             press_pos: None,
@@ -441,6 +462,9 @@ impl App {
         }
 
         self.services.sync(&self.cfg);
+        self.host_ctx(now);
+        self.host.start_new();
+        self.after_host();
         self.drop_target = Some(dragdrop::new_target(
             self.bus_tx.clone(),
             self.services.shelf_slot(),
@@ -962,12 +986,34 @@ impl App {
 
     /// Like `module_input`, with an explicit region (a drag reports where the press began).
     fn module_input_hit(&mut self, input: Input, hit: Option<HitId>) {
-        if self.shell.presence() != Presence::Expanded {
-            return;
+        match self.shell.presence() {
+            Presence::Expanded => {
+                self.host_ctx(clock::now());
+                self.host.input(self.shell.page(), hit, &input);
+                self.after_host();
+            }
+            Presence::Peek => self.peek_input(input, hit),
+            _ => {}
         }
+    }
+
+    /// Pointer input over a banner goes to the module that owns it; a click it does not use opens
+    /// that module's page.
+    fn peek_input(&mut self, input: Input, hit: Option<HitId>) {
+        let Some(owner) = self.shell.frame().peek_owner else {
+            return;
+        };
         self.host_ctx(clock::now());
-        self.host.input(self.shell.page(), hit, &input);
+        let consumed = self.host.peek_input(owner, hit, &input);
         self.after_host();
+        if !consumed
+            && matches!(input, Input::Click(_))
+            && let Some(id) = self.host.owner_id(owner)
+            && let Some(page) = self.host.page_of(id)
+        {
+            self.shell.set_page(clock::now(), page);
+            self.expand(Trigger::Hover);
+        }
     }
 
     fn hit_at(&self, p: Vec2) -> Option<HitId> {
@@ -1020,6 +1066,9 @@ impl App {
     fn env(&self) -> Env {
         Env {
             local: sys::local_time(),
+            unix: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs() as i64),
             system_24h: self.system_24h,
             audio: Audio::Idle,
         }
@@ -1085,6 +1134,11 @@ impl App {
         for c in out.commands {
             self.exec(c);
         }
+        match out.keyboard {
+            Some((id, true)) => self.grab_keyboard(id),
+            Some((id, false)) if self.kbd_owner == Some(id) => self.release_keyboard(true),
+            _ => {}
+        }
         let now = clock::now();
         for r in out.shell {
             if self.suspended() {
@@ -1146,12 +1200,25 @@ impl App {
             Command::Media(_)
             | Command::Clipboard(_)
             | Command::Shelf(_)
-            | Command::Notifications(_) => {
+            | Command::Notifications(_)
+            | Command::Calendar(_)
+            | Command::Store(_) => {
                 self.services.command(&c);
+            }
+            Command::OpenConfig => self.open_config(),
+            Command::Chime => {
+                // The self-test must stay quiet on a machine with speakers.
+                if !self.opts.selftest {
+                    unsafe {
+                        let _ = MessageBeep(MB_ICONASTERISK);
+                    }
+                }
             }
             Command::OpenUrl(url) => {
                 let u = url.trim();
-                if u.starts_with("https://") || u.starts_with("http://") {
+                if self.opts.selftest {
+                    self.last_open_url = Some(url.clone());
+                } else if u.starts_with("https://") || u.starts_with("http://") {
                     let w = wide(u);
                     unsafe {
                         ShellExecuteW(
@@ -1223,7 +1290,8 @@ impl App {
             }
             HoverAction::Expand => self.expand(Trigger::Hover),
             HoverAction::Collapse => {
-                if !self.shell.is_sticky() {
+                // Not while a text field has the keyboard: the pointer may wander off while typing.
+                if !self.shell.is_sticky() && self.kbd_owner.is_none() {
                     self.collapse(false);
                 }
             }
@@ -1333,7 +1401,7 @@ impl App {
 
     // ----- window procedures' entry points ----------------------------------------------------
 
-    fn on_stage_mouse(&mut self, msg: u32, wp: WPARAM, lp: LPARAM) {
+    pub(crate) fn on_stage_mouse(&mut self, msg: u32, wp: WPARAM, lp: LPARAM) {
         match msg {
             WM_MOUSEMOVE => {
                 self.cursor = self.layout.window_px_to_dip(x_of(lp.0), y_of(lp.0));
@@ -1383,10 +1451,17 @@ impl App {
                 self.module_input(Input::Up(self.cursor));
                 self.press_pos = None;
                 let released_on = self.hit_at(self.cursor);
-                if let (Some(a), Some(b)) = (self.press.take(), released_on)
+                let pressed_on = self.press.take();
+                if let (Some(a), Some(b)) = (pressed_on, released_on)
                     && a == b
                 {
                     self.on_click(a);
+                } else if pressed_on.is_none()
+                    && released_on.is_none()
+                    && self.shell.presence() == Presence::Peek
+                {
+                    // A click on the banner itself (not on a button in it).
+                    self.module_input_hit(Input::Click(self.cursor), None);
                 }
             }
             WM_MOUSEWHEEL => self.on_wheel(0.0, ((wp.0 >> 16) as u16 as i16) as f32),
@@ -1434,6 +1509,20 @@ impl App {
         }
     }
 
+    fn open_config(&self) {
+        let path = wide(&self.config_path.to_string_lossy());
+        unsafe {
+            ShellExecuteW(
+                None,
+                windows::core::w!("open"),
+                PCWSTR(path.as_ptr()),
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            );
+        }
+    }
+
     fn on_menu(&mut self, cmd: MenuCmd) {
         match cmd {
             MenuCmd::Toggle => self.on_hotkey(hotkeys::ID_TOGGLE),
@@ -1441,19 +1530,7 @@ impl App {
                 self.paused = !self.paused;
                 self.apply_suspension();
             }
-            MenuCmd::OpenConfig => {
-                let path = wide(&self.config_path.to_string_lossy());
-                unsafe {
-                    ShellExecuteW(
-                        None,
-                        windows::core::w!("open"),
-                        PCWSTR(path.as_ptr()),
-                        PCWSTR::null(),
-                        PCWSTR::null(),
-                        SW_SHOWNORMAL,
-                    );
-                }
-            }
+            MenuCmd::OpenConfig => self.open_config(),
             MenuCmd::ReloadConfig => self.reload_config(),
             MenuCmd::Autostart => {
                 let on = !autostart::is_enabled();
@@ -1613,7 +1690,7 @@ impl App {
         });
     }
 
-    fn apply_config(&mut self, loaded: Loaded) {
+    pub(crate) fn apply_config(&mut self, loaded: Loaded) {
         let old = std::mem::replace(&mut self.cfg, loaded.config);
         let new = self.cfg.clone();
         for w in &loaded.warnings {
@@ -1663,6 +1740,7 @@ impl App {
         self.host.set_theme(self.theme);
         self.host_ctx(clock::now());
         self.host.apply_config(Arc::new(new.clone()));
+        self.host.start_new();
         self.services.sync(&new);
         self.bus_tx.send(Source::Local, EventKind::ConfigChanged);
         self.refresh_pages();
@@ -2020,6 +2098,27 @@ unsafe extern "system" fn stage_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARA
                 with_app(|a| a.on_stage_mouse(msg, wp, lp));
             });
             return LRESULT(0);
+        }
+        // Typing, only ever delivered while a module has asked for the keyboard (see `app/kbd.rs`).
+        WM_CHAR => {
+            guard(|| {
+                with_app(|a| a.on_char(wp.0 as u32));
+            });
+            return LRESULT(0);
+        }
+        WM_KEYDOWN => {
+            let mut handled = false;
+            guard(|| {
+                handled = with_app(|a| a.on_keydown(wp.0 as u32)).unwrap_or(false);
+            });
+            if handled {
+                return LRESULT(0);
+            }
+        }
+        WM_KILLFOCUS => {
+            guard(|| {
+                with_app(|a| a.on_kill_focus());
+            });
         }
         _ => {}
     }

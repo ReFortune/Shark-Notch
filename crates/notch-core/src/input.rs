@@ -28,6 +28,10 @@ pub enum Input {
     /// Text typed (only delivered while a module has requested keyboard focus).
     Char(char),
     Key(Key),
+    /// Text pasted with Ctrl+V (the platform read the clipboard), only while the keyboard is requested.
+    Text(std::sync::Arc<str>),
+    /// The window lost keyboard focus (the user clicked elsewhere): finish or cancel any editing.
+    FocusLost,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,8 +45,6 @@ pub enum Key {
     Home,
     End,
     Tab,
-    /// Ctrl+V.
-    Paste,
 }
 
 /// Turns a stream of wheel deltas into discrete "switch page" decisions.

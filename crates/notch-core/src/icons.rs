@@ -36,11 +36,18 @@ pub enum Icon {
     /// An inbox tray with a down arrow: "drop it here".
     Tray,
     Bell,
+    Calendar,
+    /// A video camera: "join the call".
+    Video,
+    /// A circular arrow: start over.
+    Reset,
+    /// A stopwatch.
+    Timer,
 }
 
 impl Icon {
     /// Every icon, for tests and the preview tool.
-    pub const ALL: [Icon; 22] = [
+    pub const ALL: [Icon; 26] = [
         Icon::Play,
         Icon::Pause,
         Icon::Next,
@@ -63,6 +70,10 @@ impl Icon {
         Icon::Folder,
         Icon::Tray,
         Icon::Bell,
+        Icon::Calendar,
+        Icon::Video,
+        Icon::Reset,
+        Icon::Timer,
     ];
 }
 
@@ -358,6 +369,50 @@ pub fn ops(icon: Icon) -> Vec<IconOp> {
                 polyline(&[(8.5, 8.5), (12.0, 12.0), (15.5, 8.5)], false),
                 2.0,
             ),
+        ],
+        Icon::Calendar => vec![
+            Stroke(rrect_path(4.0, 5.5, 16.0, 14.5, 2.8), 2.0),
+            Stroke(polyline(&[(4.0, 10.5), (20.0, 10.5)], false), 2.0),
+            Stroke(polyline(&[(8.5, 3.5), (8.5, 7.0)], false), 2.0),
+            Stroke(polyline(&[(15.5, 3.5), (15.5, 7.0)], false), 2.0),
+            Fill(circle_path(8.5, 14.8, 1.2)),
+            Fill(circle_path(12.0, 14.8, 1.2)),
+            Fill(circle_path(15.5, 14.8, 1.2)),
+        ],
+        Icon::Video => vec![
+            Stroke(rrect_path(3.5, 6.5, 11.5, 11.0, 2.6), 2.0),
+            Stroke(
+                polyline(
+                    &[(15.0, 10.5), (20.5, 7.5), (20.5, 16.5), (15.0, 13.5)],
+                    true,
+                ),
+                2.0,
+            ),
+        ],
+        Icon::Reset => {
+            // Counter-clockwise arc from the top-right round to the top, with an arrowhead at its end.
+            let arc = arc_path(12.0, 13.0, 7.0, 330.0, -300.0);
+            let a = 30.0f32.to_radians();
+            let tip = (12.0 + 7.0 * a.sin(), 13.0 - 7.0 * a.cos());
+            // Direction of travel at the tip (counter-clockwise) and the two wings pointing back.
+            let back = (a.cos(), a.sin());
+            let wing = |deg: f32| {
+                let (s, c) = deg.to_radians().sin_cos();
+                (
+                    tip.0 + 4.2 * (back.0 * c - back.1 * s),
+                    tip.1 + 4.2 * (back.0 * s + back.1 * c),
+                )
+            };
+            vec![
+                Stroke(arc, 2.0),
+                Stroke(polyline(&[wing(40.0), tip, wing(-40.0)], false), 2.0),
+            ]
+        }
+        Icon::Timer => vec![
+            Stroke(circle_path(12.0, 13.5, 7.5), 2.0),
+            Stroke(polyline(&[(12.0, 13.5), (12.0, 9.5)], false), 2.0),
+            Stroke(polyline(&[(9.5, 3.5), (14.5, 3.5)], false), 2.0),
+            Stroke(polyline(&[(12.0, 3.5), (12.0, 6.0)], false), 2.0),
         ],
         Icon::Note => vec![
             Fill(circle_path(7.2, 17.6, 2.9)),
