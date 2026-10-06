@@ -848,8 +848,7 @@ impl App {
         if !self.host.wants_frames() {
             self.services.audio.stop();
         }
-        if let Some(stage) = self.stage.as_mut() {
-            stage.renderer.trim();
+        if let Some(stage) = self.stage.as_ref() {
             stage.gpu.trim();
         }
         if self.shell.presence() == Presence::Collapsed {

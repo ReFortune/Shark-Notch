@@ -50,6 +50,10 @@ use windows_numerics::{Matrix3x2, Vector2};
 use super::stack::GpuStack;
 use crate::win::util::wide;
 
+/// Text layouts kept between frames (see `Renderer::text_layout`). A page has tens of strings, all
+/// pages a few hundred; at 1-3 KiB a layout this is about a megabyte at most.
+const MAX_CACHED_LAYOUTS: usize = 512;
+
 /// A 2-D affine transform with explicit, documented composition (`a.then(b)` applies `a` first).
 #[derive(Clone, Copy, Debug)]
 struct Mat {
@@ -314,11 +318,6 @@ impl Renderer {
         }
     }
 
-    /// Drop cached text layouts (they are cheap to rebuild and otherwise accumulate).
-    pub fn trim(&mut self) {
-        self.layouts.clear();
-    }
-
     fn set_brush(&self, c: Color, alpha: f32) -> &ID2D1SolidColorBrush {
         unsafe { self.brush.SetColor(&d2d_color(c, alpha)) };
         &self.brush
@@ -483,7 +482,10 @@ impl Renderer {
             gpu.dwrite
                 .CreateTextLayout(&utf16, &format, w.max(1.0), h.max(1.0))?
         };
-        if self.layouts.len() > 256 {
+        // Layouts are kept between animations (throwing them away at the end of every one made the
+        // first frame of the next one slow: it had to build every string again). The cache is
+        // bounded instead; a string that changes all the time (a timer) only fills it slowly.
+        if self.layouts.len() >= MAX_CACHED_LAYOUTS {
             self.layouts.clear();
         }
         self.layouts.insert(key, layout.clone());

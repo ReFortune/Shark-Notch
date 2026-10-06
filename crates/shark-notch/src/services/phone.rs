@@ -26,6 +26,7 @@
 //! What it is not: a general web server. HTTP/1.1 subset, one request per connection, `Content-Length`
 //! bodies only, IPv4 only, plain HTTP (see `docs/IPHONE_SHORTCUTS.md` for what that means).
 
+use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -55,6 +56,9 @@ use crate::win::paths;
 
 /// At most this many requests are served at once; more connections are closed unanswered.
 const MAX_CONNECTIONS: usize = 8;
+/// ...and at most this many from one address, so one host that opens connections and says nothing
+/// cannot take every place from the phone.
+const MAX_PER_PEER: usize = 3;
 /// A request head must arrive within this long.
 const HEAD_TIME: Duration = Duration::from_secs(10);
 /// A JSON request (head and body) must be complete within this long.
@@ -148,6 +152,8 @@ struct State {
     last: Option<(i64, Arc<str>)>,
     accepted: u32,
     refused: u32,
+    /// Requests being served, per peer address (only addresses with at least one).
+    per_peer: HashMap<Ipv4Addr, usize>,
     /// Counter for the ids of notifications from the phone.
     notes: u64,
     /// What was last sent to the page, and when.
@@ -170,16 +176,53 @@ struct Shared {
     state: Mutex<State>,
 }
 
-/// The listener's inbox slot a request holds while it is served.
-struct Slot(Arc<Shared>);
+/// The place a request holds (globally and for its peer) while it is served.
+struct Slot {
+    sh: Arc<Shared>,
+    ip: Ipv4Addr,
+}
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        self.0.active.fetch_sub(1, Ordering::AcqRel);
+        self.sh.active.fetch_sub(1, Ordering::AcqRel);
+        let mut st = self.sh.lock();
+        if let Some(n) = st.per_peer.get_mut(&self.ip) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                st.per_peer.remove(&self.ip);
+            }
+        }
     }
 }
 
 impl Shared {
+    fn new(bus: BusSender, settings: Settings, port: u16, data: &Path) -> Shared {
+        Shared {
+            bus,
+            inbox: data.join("phone-inbox"),
+            token_path: data.join("phone-token"),
+            t0: Instant::now(),
+            active: AtomicUsize::new(0),
+            quit: AtomicBool::new(false),
+            trailing: AtomicBool::new(false),
+            state: Mutex::new(State {
+                token: String::new(),
+                settings,
+                guard: LoginGuard::new(),
+                nets: Vec::new(),
+                nets_at: None,
+                port,
+                last: None,
+                accepted: 0,
+                refused: 0,
+                per_peer: HashMap::new(),
+                notes: 0,
+                sent: None,
+                sent_at: None,
+            }),
+        }
+    }
+
     fn lock(&self) -> MutexGuard<'_, State> {
         // A request thread that panicked must not take the listener down with it.
         self.state.lock().unwrap_or_else(|e| e.into_inner())
@@ -290,6 +333,28 @@ impl Shared {
         self.refresh_nets();
         let st = self.lock();
         proto::peer_allowed(ip, &proto::net_pairs(&st.nets), true)
+    }
+
+    /// Take a place for a request from `ip`, if the PC and that address have one to give.
+    fn take_slot(self: &Arc<Shared>, ip: Ipv4Addr) -> Option<Slot> {
+        {
+            let mut st = self.lock();
+            let n = st.per_peer.entry(ip).or_insert(0);
+            if *n >= MAX_PER_PEER {
+                return None;
+            }
+            *n += 1;
+        }
+        // From here the slot's drop gives the peer's place back.
+        let slot = Slot {
+            sh: self.clone(),
+            ip,
+        };
+        if self.active.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
+            // `drop` takes the global place back too, so count it first.
+            return None;
+        }
+        Some(slot)
     }
 
     fn authenticate(&self, peer: Ipv4Addr, head: &Head) -> Auth {
@@ -464,30 +529,12 @@ impl PhoneService {
             }
         };
         let port = listener.local_addr().map_or(cfg.port, |a| a.port());
-        let data = paths::data_dir();
-        let shared = Arc::new(Shared {
+        let shared = Arc::new(Shared::new(
             bus,
-            inbox: data.join("phone-inbox"),
-            token_path: data.join("phone-token"),
-            t0: Instant::now(),
-            active: AtomicUsize::new(0),
-            quit: AtomicBool::new(false),
-            trailing: AtomicBool::new(false),
-            state: Mutex::new(State {
-                token: String::new(),
-                settings: Settings::of(cfg, features),
-                guard: LoginGuard::new(),
-                nets: Vec::new(),
-                nets_at: None,
-                port,
-                last: None,
-                accepted: 0,
-                refused: 0,
-                notes: 0,
-                sent: None,
-                sent_at: None,
-            }),
-        });
+            Settings::of(cfg, features),
+            port,
+            &paths::data_dir(),
+        ));
         let done = Arc::new(AtomicBool::new(false));
         let (sh, d2) = (shared.clone(), done.clone());
         let thread = std::thread::Builder::new()
@@ -659,16 +706,15 @@ fn run(listener: TcpListener, sh: &Arc<Shared>) {
             sh.count_refused();
             continue;
         }
-        if sh.active.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
-            sh.active.fetch_sub(1, Ordering::AcqRel);
+        let Some(slot) = sh.take_slot(ip) else {
+            sh.count_refused();
             continue;
-        }
-        let slot = Slot(sh.clone());
+        };
         let spawned = std::thread::Builder::new()
             .name("phone-request".into())
             .stack_size(256 * 1024)
             .spawn(move || {
-                let sh = slot.0.clone();
+                let sh = slot.sh.clone();
                 serve(&sh, stream, ip);
                 drop(slot);
             });
@@ -1115,6 +1161,207 @@ unsafe fn adapters(first: *const IP_ADAPTER_ADDRESSES_LH) -> Vec<LocalNet> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use notch_core::bus::{Bus, Waker};
+    use notch_core::events::Event;
+
+    struct NoWake;
+
+    impl Waker for NoWake {
+        fn wake(&self) {}
+    }
+
+    /// The listener's shared state without a socket, and the receiving end of its bus.
+    fn shared() -> (Arc<Shared>, Bus) {
+        let (bus, tx) = Bus::new(Arc::new(NoWake));
+        let features = Features {
+            clipboard: true,
+            shelf: true,
+            notifications: true,
+        };
+        let sh = Shared::new(
+            tx,
+            Settings::of(&PhoneCfg::default(), features),
+            8765,
+            &std::env::temp_dir().join("shark-notch-phone-unit-test"),
+        );
+        (Arc::new(sh), bus)
+    }
+
+    fn events(bus: &mut Bus) -> Vec<Event> {
+        let mut out = Vec::new();
+        bus.drain(&mut out);
+        out
+    }
+
+    fn head(auth: Option<&str>) -> Head {
+        let a = auth.map_or(String::new(), |t| format!("Authorization: Bearer {t}\r\n"));
+        proto::parse_head(format!("GET /ping HTTP/1.1\r\n{a}\r\n").as_bytes())
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn places_are_limited_per_address_and_in_all_and_come_back() {
+        let (sh, _bus) = shared();
+        let a = Ipv4Addr::new(10, 0, 0, 1);
+        let mut held: Vec<Slot> = (0..MAX_PER_PEER)
+            .map(|_| sh.take_slot(a).expect("a place"))
+            .collect();
+        assert!(
+            sh.take_slot(a).is_none(),
+            "one address cannot hold them all"
+        );
+        assert_eq!(sh.active.load(Ordering::SeqCst), MAX_PER_PEER);
+        drop(held.pop());
+        held.push(sh.take_slot(a).expect("a freed place can be used again"));
+        // Other addresses fill the rest; one more than the PC serves is refused and takes nothing.
+        for i in 0..(MAX_CONNECTIONS - MAX_PER_PEER) {
+            held.push(
+                sh.take_slot(Ipv4Addr::new(10, 0, 1, i as u8))
+                    .expect("room for another address"),
+            );
+        }
+        assert!(sh.take_slot(Ipv4Addr::new(10, 0, 2, 1)).is_none());
+        assert_eq!(sh.active.load(Ordering::SeqCst), MAX_CONNECTIONS);
+        assert!(!sh.lock().per_peer.contains_key(&Ipv4Addr::new(10, 0, 2, 1)));
+        drop(held);
+        assert_eq!(sh.active.load(Ordering::SeqCst), 0);
+        assert!(sh.lock().per_peer.is_empty(), "nothing is left behind");
+    }
+
+    #[test]
+    fn what_the_phone_sends_becomes_events_from_the_phone() {
+        let (sh, mut bus) = shared();
+        sh.apply(Action::Battery {
+            percent: 73,
+            charging: true,
+        });
+        sh.apply(Action::Focus {
+            name: "Work".into(),
+            active: true,
+        });
+        sh.apply(Action::Clipboard("hello".into()));
+        sh.apply(Action::Notify {
+            app: String::new(),
+            title: "Mum".into(),
+            body: "Call me".into(),
+        });
+        sh.apply(Action::Notify {
+            app: "Messages".into(),
+            title: "Again".into(),
+            body: String::new(),
+        });
+        let evs = events(&mut bus);
+        assert_eq!(evs.len(), 5);
+        assert!(evs.iter().all(|e| e.source == Source::Phone));
+        assert!(matches!(
+            &evs[0].kind,
+            EventKind::Battery(b) if b.percent == 73 && b.charging
+        ));
+        assert!(matches!(
+            &evs[1].kind,
+            EventKind::FocusChanged(f) if &*f.name == "Work" && f.active
+        ));
+        assert!(matches!(
+            &evs[2].kind,
+            EventKind::Inbound(Inbound::Text(t)) if &**t == "hello"
+        ));
+        let (EventKind::Notification(a), EventKind::Notification(b)) = (&evs[3].kind, &evs[4].kind)
+        else {
+            panic!("two notifications expected");
+        };
+        assert_eq!(&*a.app, "iPhone", "no app name: the phone is the app");
+        assert_eq!(&*b.app, "Messages");
+        // Ids of phone notifications have bit 32 set and never repeat.
+        assert!(a.id >> 32 == 1 && b.id >> 32 == 1 && a.id != b.id);
+        assert!(a.fresh && !a.quiet);
+    }
+
+    #[test]
+    fn the_token_decides_and_wrong_guesses_lock_the_address_out() {
+        let (sh, _bus) = shared();
+        let ip = Ipv4Addr::new(192, 168, 1, 50);
+        // Before the listener thread has a token nothing is accepted, not even an empty one.
+        assert!(matches!(sh.authenticate(ip, &head(Some(""))), Auth::Wrong));
+        sh.lock().token = "secret-token".into();
+        assert!(matches!(sh.authenticate(ip, &head(None)), Auth::Wrong));
+        assert!(matches!(
+            sh.authenticate(ip, &head(Some("secret-token"))),
+            Auth::Ok
+        ));
+        for _ in 0..5 {
+            assert!(matches!(
+                sh.authenticate(ip, &head(Some("guess"))),
+                Auth::Wrong
+            ));
+        }
+        assert!(
+            matches!(sh.authenticate(ip, &head(Some("secret-token"))), Auth::Locked(s) if s > 0),
+            "locked out: even the right token waits"
+        );
+        // Another address is not affected.
+        assert!(matches!(
+            sh.authenticate(Ipv4Addr::new(192, 168, 1, 51), &head(Some("secret-token"))),
+            Auth::Ok
+        ));
+    }
+
+    #[test]
+    fn who_may_connect_follows_the_networks_and_the_setting() {
+        let (sh, _bus) = shared();
+        {
+            // A list that was just read: no system call happens in this test.
+            let mut st = sh.lock();
+            st.nets = vec![LocalNet {
+                ip: Ipv4Addr::new(192, 168, 1, 20),
+                prefix: 24,
+                gateway: true,
+            }];
+            st.nets_at = Some(Instant::now());
+        }
+        assert!(sh.peer_allowed(Ipv4Addr::LOCALHOST));
+        assert!(
+            sh.peer_allowed(Ipv4Addr::new(192, 168, 1, 77)),
+            "same network"
+        );
+        assert!(!sh.peer_allowed(Ipv4Addr::new(8, 8, 8, 8)), "not private");
+        assert!(
+            !sh.peer_allowed(Ipv4Addr::new(10, 0, 0, 5)),
+            "private, but another network"
+        );
+        sh.lock().settings.strict = false;
+        assert!(
+            sh.peer_allowed(Ipv4Addr::new(10, 0, 0, 5)),
+            "any private address"
+        );
+        assert!(
+            !sh.peer_allowed(Ipv4Addr::new(8, 8, 8, 8)),
+            "still never a public one"
+        );
+    }
+
+    #[test]
+    fn the_page_hears_of_changes_once_a_second_at_most_and_never_misses_the_last() {
+        let (sh, mut bus) = shared();
+        sh.publish(true);
+        sh.publish(false);
+        assert_eq!(events(&mut bus).len(), 1, "unchanged: nothing more is sent");
+        // A burst of requests: the first is sent as soon as it is counted (the gap since the last
+        // publish is not over, so it waits); all of them together make one update, at the end.
+        for _ in 0..3 {
+            sh.count_accepted("clipboard");
+        }
+        sh.count_refused();
+        assert!(events(&mut bus).is_empty(), "inside the gap: held back");
+        std::thread::sleep(PUBLISH_GAP + Duration::from_millis(600));
+        let evs = events(&mut bus);
+        assert_eq!(evs.len(), 1, "one update for the whole burst");
+        let EventKind::PhoneLink(l) = &evs[0].kind else {
+            panic!("a link state expected");
+        };
+        assert_eq!((l.accepted, l.refused), (3, 1));
+        assert_eq!(l.last.as_ref().map(|(_, w)| &**w), Some("clipboard"));
+    }
 
     #[test]
     fn this_machine_has_networks_or_none_and_never_crashes() {

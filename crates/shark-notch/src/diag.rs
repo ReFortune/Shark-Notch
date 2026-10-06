@@ -128,6 +128,8 @@ pub struct SelfTest {
     phone_token: String,
     phone_mark: PhoneMark,
     phone_idle: Option<Mark>,
+    /// A socket that holds a port for the "port already in use" part of the scenario.
+    phone_blocker: Option<std::net::TcpListener>,
     /// Cycles per second of a busy core (calibrated), for tick-free CPU percentages.
     cycles_hz: f64,
     warm_idle: Option<(f64, f64)>,     // (cpu %, private MiB)
@@ -285,6 +287,10 @@ enum Act {
     PhoneIdleEnd,
     PhoneOff,
     PhoneOffCheck,
+    PhoneBusy,
+    PhoneBusyCheck,
+    PhoneFreed,
+    PhoneFreedOff,
     Report,
 }
 
@@ -414,7 +420,11 @@ const SCRIPT: &[(f64, Act)] = &[
     (111.3, Act::PhoneIdleEnd),
     (111.5, Act::PhoneOff),
     (112.4, Act::PhoneOffCheck),
-    (112.8, Act::Report),
+    (112.8, Act::PhoneBusy),
+    (113.4, Act::PhoneBusyCheck),
+    (113.5, Act::PhoneFreed),
+    (114.0, Act::PhoneFreedOff),
+    (114.4, Act::Report),
 ];
 
 const CLIP_TEXT: &str = "Selftest clipboard text";
@@ -711,6 +721,7 @@ pub fn begin(a: &mut App) {
         phone_token: String::new(),
         phone_mark: PhoneMark::default(),
         phone_idle: None,
+        phone_blocker: None,
         cycles_hz: sys::cycles_per_sec(),
         warm_idle: None,
         released_idle: None,
@@ -2251,6 +2262,60 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
             Some(lines) => report_lines(st, lines),
             None => st.fail("phone: the closed-port check had not finished".into()),
         },
+        Act::PhoneBusy => match std::net::TcpListener::bind(("0.0.0.0", 0)) {
+            Ok(blocker) => {
+                // Another program has the port: the listener must not start, and must say why.
+                let port = blocker.local_addr().map_or(0, |addr| addr.port());
+                st.phone_blocker = Some(blocker);
+                st.phone_port = port;
+                a.last_phone_link = None;
+                reconfigure(a, |c| {
+                    c.phone.listen = true;
+                    c.phone.port = port;
+                });
+                let none = a.services.phone_port().is_none();
+                st.say(format!(
+                    "phone: with port {port} held by another program the listener does not start: {none}"
+                ));
+                if !none {
+                    st.fail("phone: a listener started on a port that was already taken".into());
+                }
+            }
+            Err(e) => st.fail(format!(
+                "phone: cannot hold a port for the busy-port test ({e})"
+            )),
+        },
+        Act::PhoneBusyCheck => {
+            let err = a.last_phone_link.as_ref().and_then(|l| l.error.clone());
+            st.say(format!(
+                "phone: the page is told why it is not listening: {err:?}"
+            ));
+            if !err.as_deref().is_some_and(|e| e.contains("already used")) {
+                st.fail("phone: no 'port already used' message reached the page".into());
+            }
+        }
+        Act::PhoneFreed => {
+            // The other program lets go; the next time the settings are applied the link starts.
+            st.phone_blocker = None;
+            let port = st.phone_port;
+            reconfigure(a, |c| {
+                c.phone.listen = true;
+                c.phone.port = port;
+            });
+            let started = a.services.phone_port() == Some(port);
+            st.say(format!(
+                "phone: once the port is free the same settings start the listener on it: {started}"
+            ));
+            if !started {
+                st.fail("phone: the listener did not start on a port that became free".into());
+            }
+        }
+        Act::PhoneFreedOff => {
+            reconfigure(a, |c| c.phone.listen = false);
+            if a.services.phone_port().is_some() {
+                st.fail("phone: the listener survived [phone] listen = false (second time)".into());
+            }
+        }
         Act::Report => finish(a, st),
     }
 }

@@ -42,6 +42,9 @@ pub struct GpuStack {
     pub adapter_name: String,
 }
 
+/// Direct2D resources untouched for this long are freed when an animation ends (`trim`).
+const CACHE_KEEP_MS: u32 = 60_000;
+
 const LEVELS: [D3D_FEATURE_LEVEL; 4] = [
     D3D_FEATURE_LEVEL_11_1,
     D3D_FEATURE_LEVEL_11_0,
@@ -167,11 +170,13 @@ impl GpuStack {
         }
     }
 
-    /// Free what Direct2D caches internally. Called when going idle.
+    /// Free what Direct2D has cached and not used for a minute (glyphs of a page nobody has opened,
+    /// say). Called when an animation ends. Clearing *everything* here (`ClearResources(0)`) threw
+    /// away what the pre-warm had built, so the first frame of the next animation paid for it again:
+    /// on the CI machine 80-440 ms, in the middle of an expansion.
     pub fn trim(&self) {
         unsafe {
-            self.d2d_device.ClearResources(0);
-            // IDXGIDevice3::Trim would also help but needs the Win8.1 interface; ClearResources suffices.
+            self.d2d_device.ClearResources(CACHE_KEEP_MS);
         }
     }
 }

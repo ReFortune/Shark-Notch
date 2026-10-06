@@ -179,10 +179,13 @@ A request for a module that is switched off on the PC gets `403` and a message t
 * The file carries Windows' **"downloaded from the internet" mark** (a `Zone.Identifier` stream), so
   SmartScreen and Office's Protected View look at it before it can do anything, as for a browser
   download. The notch **never opens or runs** it; the shelf only holds a reference.
-* **Programs and scripts are refused** (`415`): `exe com scr bat cmd msi msp mst ps1 psm1 psd1 vbs vbe
-  js jse wsf wsh hta lnk url reg dll sys jar cpl inf scf appx msix appxbundle msixbundle gadget pif
-  application chm iso vhd vhdx`. A phone sends photos, documents and recordings; there is no good
-  reason to hand the PC something to double-click.
+* **Programs and scripts are refused** (`415`), by the last extension of the name, whatever case:
+  `exe com scr bat cmd msi msp mst ps1 psm1 psd1 ps1xml psc1 vbs vbe vb vbscript js jse wsf wsh ws wsc
+  sct hta lnk url reg dll sys ocx drv jar cpl inf scf shb shs appx msix appxbundle msixbundle gadget
+  pif application chm msc xll wll vsto diagcab settingcontent-ms library-ms searchconnector-ms theme
+  themepack rdp jnlp iso img vhd vhdx py pyw pyz pl rb`. A phone sends photos, documents and
+  recordings; there is no good reason to hand the PC something to double-click. (A script you really
+  want to send: put it in a zip first.)
 * A file that does not arrive in full is deleted; the shelf only ever hears about whole files.
 * Received files older than `keep_days` (14) are deleted from the inbox, when the listener starts
   and after each new file. Only folders this app made are ever touched. Files you dragged out of
@@ -206,7 +209,8 @@ What it is protected by, and what it is not.
   app data). Five wrong tokens within a minute lock that address out for two minutes.
 * **What it checks first.** The order is: who you are, the request head (8 KiB, 10 s), the token,
   what you asked for, the declared size against the limit, and only then the body. A slow or
-  stalled upload is cut off; at most 8 requests are served at once.
+  stalled upload is cut off; at most 8 requests are served at once and 3 from any one address, so a
+  host that opens connections and says nothing cannot shut the phone out.
 * **Plain HTTP.** There is **no encryption** on the link: anyone who can read the traffic on your
   network (not just a stranger: someone who knows the Wi-Fi password can often see other devices'
   traffic) can read the token and whatever you send. TLS needs a certificate your phone trusts,
