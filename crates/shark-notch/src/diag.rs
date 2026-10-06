@@ -111,6 +111,9 @@ pub struct SelfTest {
     /// (`Downloads`, `DownloadDone`) before its acts.
     dl_dir: Option<std::path::PathBuf>,
     dl_mark: (u32, u32),
+    /// The stats page scenario: `Stats` events seen at a point, and the start of the CPU window.
+    stats_mark: u32,
+    stats_begin: Option<Mark>,
     /// Cycles per second of a busy core (calibrated), for tick-free CPU percentages.
     cycles_hz: f64,
     warm_idle: Option<(f64, f64)>,     // (cpu %, private MiB)
@@ -216,6 +219,12 @@ enum Act {
     DlShow,
     DlShowCheck,
     DlOff,
+    StatsPage,
+    StatsBegin,
+    StatsCheck,
+    StatsClose,
+    StatsSettled,
+    StatsQuietCheck,
     Report,
 }
 
@@ -320,7 +329,13 @@ const SCRIPT: &[(f64, Act)] = &[
     (86.4, Act::DlShow),
     (86.6, Act::DlShowCheck),
     (86.8, Act::DlOff),
-    (87.4, Act::Report),
+    (87.2, Act::StatsPage),
+    (88.2, Act::StatsBegin),
+    (91.4, Act::StatsCheck),
+    (91.5, Act::StatsClose),
+    (92.2, Act::StatsSettled),
+    (94.8, Act::StatsQuietCheck),
+    (95.2, Act::Report),
 ];
 
 const CLIP_TEXT: &str = "Selftest clipboard text";
@@ -557,6 +572,8 @@ pub fn begin(a: &mut App) {
         cal_mark: 0,
         dl_dir: None,
         dl_mark: (0, 0),
+        stats_mark: 0,
+        stats_begin: None,
         cycles_hz: sys::cycles_per_sec(),
         warm_idle: None,
         released_idle: None,
@@ -1707,6 +1724,73 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
             reconfigure(a, |c| c.live.download_dir = String::new());
             if let Some(dir) = st.dl_dir.take() {
                 let _ = std::fs::remove_dir_all(dir);
+            }
+        }
+        Act::StatsPage => match a.host.page_of("stats") {
+            Some(p) => {
+                a.shell.set_page(now, p);
+                a.expand(Trigger::Hotkey);
+            }
+            None => st.fail("the stats page is not in the ring".into()),
+        },
+        Act::StatsBegin => {
+            st.stats_mark = a.bus_counts[Kind::Stats as usize];
+            st.stats_begin = Some(mark());
+        }
+        Act::StatsCheck => {
+            let end = mark();
+            let got = a.bus_counts[Kind::Stats as usize] - st.stats_mark;
+            let text = drawn_text(a);
+            let has = |s: &str| text.iter().any(|t| t == s);
+            let percent = text
+                .iter()
+                .filter(|t| t.ends_with('%') && t.len() <= 4)
+                .count();
+            let charts = a
+                .list
+                .cmds
+                .iter()
+                .filter(|c| matches!(c, DrawCmd::Shape { .. }))
+                .count();
+            st.say(format!(
+                "stats: {got} reading(s) in the 3.2 s the page was open (one per second asked for by the host's poll); tiles CPU/Memory/GPU/Network/Battery drawn: {}; {percent} percentage value(s); {charts} chart shape(s) in the last frame",
+                has("CPU") && has("Memory") && has("GPU") && has("Network") && has("Battery")
+            ));
+            if let Some(b) = st.stats_begin.take() {
+                let secs = (end.t - b.t).max(1e-3);
+                let cpu = if st.cycles_hz > 1e6 && end.m.cycles > 0 {
+                    end.m.cycles.saturating_sub(b.m.cycles) as f64 / st.cycles_hz / secs * 100.0
+                } else {
+                    (end.m.cpu_secs - b.m.cpu_secs) / secs * 100.0
+                };
+                st.say(format!(
+                    "stats: with the page open and sampling once a second this process used {cpu:.2}% of a core over {secs:.1} s ({:.1} MiB private)",
+                    sys::mib(end.m.private_ws)
+                ));
+            }
+            for (label, ok) in [
+                ("a few readings arrived while the page was open", got >= 2),
+                (
+                    "the tiles are drawn",
+                    has("CPU") && has("Memory") && has("GPU") && has("Network") && has("Battery"),
+                ),
+                ("CPU and memory show percentages", percent >= 2),
+                ("history charts are drawn", charts >= 2),
+            ] {
+                if !ok {
+                    st.fail(format!("stats: {label}: no ({text:?})"));
+                }
+            }
+        }
+        Act::StatsClose => a.collapse(true),
+        Act::StatsSettled => st.stats_mark = a.bus_counts[Kind::Stats as usize],
+        Act::StatsQuietCheck => {
+            let extra = a.bus_counts[Kind::Stats as usize] - st.stats_mark;
+            st.say(format!(
+                "stats: {extra} reading(s) in the 2.6 s after the page was closed (nothing may be measured while it is not on screen)"
+            ));
+            if extra != 0 {
+                st.fail("stats: readings kept arriving after the page was closed".into());
             }
         }
         Act::Report => finish(a, st),

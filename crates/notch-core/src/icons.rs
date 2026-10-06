@@ -46,11 +46,15 @@ pub enum Icon {
     Mic,
     /// An arrow down into a tray: a download.
     Download,
+    /// A heartbeat line: system activity.
+    Pulse,
+    /// A lightning bolt: charging.
+    Bolt,
 }
 
 impl Icon {
     /// Every icon, for tests and the preview tool.
-    pub const ALL: [Icon; 28] = [
+    pub const ALL: [Icon; 30] = [
         Icon::Play,
         Icon::Pause,
         Icon::Next,
@@ -79,6 +83,8 @@ impl Icon {
         Icon::Timer,
         Icon::Mic,
         Icon::Download,
+        Icon::Pulse,
+        Icon::Bolt,
     ];
 }
 
@@ -419,6 +425,31 @@ pub fn ops(icon: Icon) -> Vec<IconOp> {
             Stroke(polyline(&[(12.0, 18.1), (12.0, 21.0)], false), 2.0),
             Stroke(polyline(&[(8.5, 21.0), (15.5, 21.0)], false), 2.0),
         ],
+        Icon::Pulse => vec![Stroke(
+            polyline(
+                &[
+                    (2.5, 12.5),
+                    (7.0, 12.5),
+                    (9.5, 5.0),
+                    (14.0, 19.5),
+                    (16.5, 12.5),
+                    (21.5, 12.5),
+                ],
+                false,
+            ),
+            2.0,
+        )],
+        Icon::Bolt => vec![Fill(polyline(
+            &[
+                (13.5, 2.0),
+                (5.0, 13.5),
+                (11.0, 13.5),
+                (10.0, 22.0),
+                (19.0, 10.0),
+                (13.0, 10.0),
+            ],
+            true,
+        ))],
         Icon::Download => vec![
             Stroke(polyline(&[(12.0, 3.5), (12.0, 14.5)], false), 2.0),
             Stroke(

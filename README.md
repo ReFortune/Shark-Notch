@@ -95,7 +95,7 @@ locked, display-off or a fullscreen app is foreground.
 | 6 | Windows notifications (banner, list, missed badge) | implemented — needs a one-off identity step and your hardware, see [`docs/NOTIFICATIONS.md`](docs/NOTIFICATIONS.md) |
 | 7 | Calendar (ICS feeds, month view, Join banner, countdown chip) + Pomodoro with tasks | implemented — real feeds and typing need your machine, see [`docs/CALENDAR_AND_FOCUS.md`](docs/CALENDAR_AND_FOCUS.md) |
 | 8 | Live activities (microphone/camera chip, quick timers, browser downloads with *Show in folder*) | implemented — the privacy chip and real browsers need your machine; copy progress is **not** feasible, see [`docs/LIVE.md`](docs/LIVE.md) |
-| 9 | System stats | planned |
+| 9 | System stats (CPU, memory, GPU, network, battery; read only while the page is open) | implemented — GPU counters and battery need your hardware, see [`docs/STATS.md`](docs/STATS.md) |
 | 10 | Command centre | planned |
 | 11 | iPhone listener | planned |
 

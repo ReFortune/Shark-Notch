@@ -372,6 +372,34 @@ impl<'a> Renderer<'a> {
                     );
                 }
             }
+            DrawCmd::Shape { path, fill, stroke } => {
+                if let Some(p) = to_skia_path(path) {
+                    if let Some(c) = fill {
+                        self.pix.fill_path(
+                            &p,
+                            &paint_for(*c, st.alpha),
+                            FillRule::Winding,
+                            st.transform,
+                            mask,
+                        );
+                    }
+                    if let Some((w, c)) = stroke {
+                        let stroke = Stroke {
+                            width: *w,
+                            line_cap: LineCap::Round,
+                            line_join: LineJoin::Round,
+                            ..Default::default()
+                        };
+                        self.pix.stroke_path(
+                            &p,
+                            &paint_for(*c, st.alpha),
+                            &stroke,
+                            st.transform,
+                            mask,
+                        );
+                    }
+                }
+            }
             DrawCmd::Line { a, b, width, color } => {
                 let mut pb = PathBuilder::new();
                 pb.move_to(a.x, a.y);

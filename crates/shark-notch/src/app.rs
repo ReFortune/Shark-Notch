@@ -1209,6 +1209,7 @@ impl App {
             | Command::Shelf(_)
             | Command::Notifications(_)
             | Command::Calendar(_)
+            | Command::Stats(_)
             | Command::Store(_) => {
                 self.services.command(&c);
             }

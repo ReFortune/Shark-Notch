@@ -118,6 +118,35 @@ pub struct DownloadDone {
     pub bytes: u64,
 }
 
+/// This computer's power state: the battery (the same `BatteryInfo` the iPhone's battery arrives
+/// as) and what only the PC knows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PowerStatus {
+    pub battery: BatteryInfo,
+    /// Connected to power (a full battery on the charger is plugged in but not charging).
+    pub plugged: bool,
+    /// Seconds of battery left at the current draw, when Windows can tell.
+    pub secs_left: Option<u32>,
+    /// The operating system's battery saver is on.
+    pub saver: bool,
+}
+
+/// One reading of the machine's vital signs. A field is `None` when it could not be measured (the
+/// first reading has no CPU percentage yet; a PC without a GPU counter has no GPU figure).
+#[derive(Clone, Debug, PartialEq)]
+pub struct StatsSnapshot {
+    /// Busy share of the processor, 0..=100.
+    pub cpu: Option<f32>,
+    pub mem_used: u64,
+    pub mem_total: u64,
+    /// Busiest GPU engine, 0..=100.
+    pub gpu: Option<f32>,
+    /// `(download, upload)` in bytes per second over the physical adapters.
+    pub net: Option<(f64, f64)>,
+    /// `None`: this PC has no battery.
+    pub power: Option<PowerStatus>,
+}
+
 /// A value read back from the small persistent store (`None` = nothing saved under that key yet).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoreItem {
@@ -223,6 +252,8 @@ pub enum EventKind {
     /// The downloads in progress (sent whenever they change, a couple of times a second at most).
     Downloads(Arc<Vec<ActiveDownload>>),
     DownloadDone(DownloadDone),
+    /// A reading of the system's vital signs (answer to `StatsCmd::Sample`).
+    Stats(Arc<StatsSnapshot>),
 }
 
 /// Fieldless mirror of [`EventKind`], used for subscription masks.
@@ -247,10 +278,11 @@ pub enum Kind {
     Privacy,
     Downloads,
     DownloadDone,
+    Stats,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 18] = [
+    pub const ALL: [Kind; 19] = [
         Kind::ConfigChanged,
         Kind::ThemeChanged,
         Kind::Suspended,
@@ -269,6 +301,7 @@ impl Kind {
         Kind::Privacy,
         Kind::Downloads,
         Kind::DownloadDone,
+        Kind::Stats,
     ];
 }
 
@@ -293,6 +326,7 @@ impl EventKind {
             EventKind::Privacy(_) => Kind::Privacy,
             EventKind::Downloads(_) => Kind::Downloads,
             EventKind::DownloadDone(_) => Kind::DownloadDone,
+            EventKind::Stats(_) => Kind::Stats,
         }
     }
 }
@@ -386,6 +420,14 @@ mod tests {
                 path: "C:\\a.zip".into(),
                 bytes: 1,
             }),
+            EventKind::Stats(Arc::new(StatsSnapshot {
+                cpu: None,
+                mem_used: 0,
+                mem_total: 0,
+                gpu: None,
+                net: None,
+                power: None,
+            })),
         ]
     }
 

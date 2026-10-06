@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::color::Color;
 use crate::geom::{Rect, Vec2};
 use crate::icons::Icon;
-use crate::path::NotchShape;
+use crate::path::{NotchShape, Path};
 use crate::theme::Theme;
 
 /// Module-defined identifier of an interactive region ("play button", "item 3", ...).
@@ -204,6 +204,13 @@ pub enum DrawCmd {
         rect: Rect,
         radius: f32,
         opacity: f32,
+    },
+    /// A vector path, filled and/or stroked (charts). Coordinates are in the list's space.
+    Shape {
+        path: Arc<Path>,
+        fill: Option<Color>,
+        /// Stroke width and colour (round caps and joins).
+        stroke: Option<(f32, Color)>,
     },
     /// Two-colour linear gradient inside a rounded rect.
     Gradient {
@@ -402,6 +409,38 @@ impl<'a> Canvas<'a> {
         let pad = rect.w.min(rect.h) * 0.24;
         self.icon(icon, rect.inset(pad), fg);
         self.hit(rect, id, CursorKind::Hand);
+    }
+
+    /// A filled and/or stroked path.
+    pub fn shape(&mut self, path: Path, fill: Option<Color>, stroke: Option<(f32, Color)>) {
+        if !path.cmds.is_empty() {
+            self.push(DrawCmd::Shape {
+                path: Arc::new(path),
+                fill,
+                stroke,
+            });
+        }
+    }
+
+    /// A smooth sparkline of `values` (oldest first, newest at the right edge) in `rect`, `slots`
+    /// samples wide, `lo..=hi` bottom to top: the area under it in `area`, then the line itself.
+    #[allow(clippy::too_many_arguments)]
+    pub fn sparkline(
+        &mut self,
+        rect: Rect,
+        values: &[f32],
+        slots: usize,
+        (lo, hi): (f32, f32),
+        line: Color,
+        width: f32,
+        area: Option<Color>,
+    ) {
+        if let Some((line_path, area_path)) = crate::chart::sparkline(rect, values, slots, lo, hi) {
+            if let Some(a) = area {
+                self.shape(area_path, Some(a), None);
+            }
+            self.shape(line_path, None, Some((width, line)));
+        }
     }
 
     /// Horizontal progress/seek bar. `frac` is clamped to `[0, 1]`.

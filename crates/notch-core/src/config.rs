@@ -468,6 +468,29 @@ impl Default for LiveCfg {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+pub struct StatsCfg {
+    pub enabled: bool,
+    /// Seconds between readings while the page is on screen (nothing is read while it is not).
+    pub interval_secs: f32,
+    /// Read the GPU's utilisation counters too (the most expensive of the readings).
+    pub gpu: bool,
+    /// Show network speeds in bits per second (Mbps) instead of bytes (MB/s).
+    pub net_bits: bool,
+}
+
+impl Default for StatsCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            interval_secs: 1.0,
+            gpu: true,
+            net_bits: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Modules {
     /// Page order. Unknown ids are ignored; modules that are disabled are skipped.
     pub order: Vec<String>,
@@ -484,6 +507,7 @@ impl Default for Modules {
                 "calendar".into(),
                 "pomodoro".into(),
                 "live".into(),
+                "stats".into(),
                 "clock".into(),
             ],
         }
@@ -508,6 +532,7 @@ pub struct Config {
     pub calendar: CalendarCfg,
     pub pomodoro: PomodoroCfg,
     pub live: LiveCfg,
+    pub stats: StatsCfg,
     pub clock: ClockCfg,
 }
 
@@ -740,6 +765,29 @@ impl Config {
             "pomodoro.peek_secs",
             w,
         );
+        clamp_f(&mut self.live.peek_secs, 2.0, 30.0, "live.peek_secs", w);
+        clamp_f(
+            &mut self.stats.interval_secs,
+            0.5,
+            5.0,
+            "stats.interval_secs",
+            w,
+        );
+        // Quick timers: 1 minute to 10 hours, at most six buttons.
+        let presets = std::mem::take(&mut self.live.timer_presets);
+        let before = presets.len();
+        self.live.timer_presets = presets
+            .into_iter()
+            .filter(|m| (1..=crate::timers::MAX_MINUTES).contains(m))
+            .take(6)
+            .collect();
+        if self.live.timer_presets.len() != before {
+            w.push("live.timer_presets: only 1..=600 minutes, at most six, are kept".to_string());
+        }
+        if self.live.timer_presets.is_empty() {
+            w.push("live.timer_presets: empty, using the defaults".to_string());
+            self.live.timer_presets = LiveCfg::default().timer_presets;
+        }
         clamp_u(
             &mut self.clipboard.max_items,
             5,
@@ -814,6 +862,7 @@ impl Config {
             "calendar" => self.calendar.enabled,
             "pomodoro" => self.pomodoro.enabled,
             "live" => self.live.enabled,
+            "stats" => self.stats.enabled,
             _ => false,
         };
         enabled && self.modules.order.iter().any(|m| m == id)
@@ -905,7 +954,7 @@ show_missed_indicator = true
 peek_over_fullscreen = false
 
 [modules]
-order = ["media", "clipboard", "shelf", "notifications", "calendar", "pomodoro", "live", "clock"]   # page order; a module that is disabled in its own section is skipped
+order = ["media", "clipboard", "shelf", "notifications", "calendar", "pomodoro", "live", "stats", "clock"]   # page order; a module that is disabled in its own section is skipped
 
 [media]
 enabled = true                 # follows whatever Windows considers the current media session
@@ -964,6 +1013,12 @@ timer_presets = [1, 5, 10, 15, 30, 60]   # quick timers, in minutes (at most six
 sound = true                   # the system chime when a timer ends (never over a fullscreen app)
 peek_secs = 6.0
 
+[stats]
+enabled = true
+interval_secs = 1.0            # between readings while the page is on screen; nothing is read while it is not
+gpu = true                     # read the GPU utilisation counters too (the dearest reading); off hides the GPU tile
+net_bits = false               # network speeds in Mbps instead of MB/s
+
 [clock]
 enabled = true
 hour_format = "system"         # system | 12 | 24
@@ -984,6 +1039,21 @@ mod tests {
             "DEFAULT_TOML drifted from Config::default()"
         );
         assert!(l.warnings.is_empty(), "{:?}", l.warnings);
+    }
+
+    #[test]
+    fn quick_timer_presets_and_the_stats_interval_are_bounded() {
+        let l = Config::parse(
+            "[live]\ntimer_presets = [0, 5, 9999, 10, 15, 20, 25, 30]\n[stats]\ninterval_secs = 0.01\n",
+        )
+        .unwrap();
+        assert_eq!(l.config.live.timer_presets, vec![5, 10, 15, 20, 25, 30]);
+        assert_eq!(l.config.stats.interval_secs, 0.5);
+        assert!(l.warnings.iter().any(|w| w.contains("live.timer_presets")));
+        assert!(l.warnings.iter().any(|w| w.contains("stats.interval_secs")));
+        let l = Config::parse("[live]\ntimer_presets = []\n").unwrap();
+        assert_eq!(l.config.live.timer_presets, vec![1, 5, 10, 15, 30, 60]);
+        assert_eq!(l.warnings.len(), 1);
     }
 
     #[test]

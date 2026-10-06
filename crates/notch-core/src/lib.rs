@@ -2,6 +2,7 @@
 //! unit-tested on any host; the Windows binary (`shark-notch`) only supplies OS glue and pixels.
 
 pub mod bus;
+pub mod chart;
 pub mod civil;
 pub mod clipstore;
 pub mod color;
@@ -31,6 +32,7 @@ pub mod raster;
 pub mod sched;
 pub mod shell;
 pub mod spring;
+pub mod stats;
 pub mod theme;
 pub mod timers;
 pub mod todos;

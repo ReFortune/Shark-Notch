@@ -22,6 +22,7 @@ pub mod media;
 pub mod notifications;
 pub mod privacy;
 pub mod shelf;
+pub mod stats;
 pub mod store;
 
 pub struct Services {
@@ -36,6 +37,7 @@ pub struct Services {
     calendar: Option<calendar::CalendarService>,
     privacy: Option<privacy::PrivacyService>,
     downloads: Option<downloads::DownloadsService>,
+    stats: Option<stats::StatsService>,
     /// Whether the configuration wants the privacy watcher (it is stopped while suspended).
     want_privacy: bool,
     /// The shelf worker's inbox, shared with the OLE drop target (empty while the shelf is off).
@@ -57,6 +59,7 @@ impl Services {
             calendar: None,
             privacy: None,
             downloads: None,
+            stats: None,
             want_privacy: false,
             shelf_slot: Arc::new(Mutex::new(None)),
             suspended: false,
@@ -190,6 +193,18 @@ impl Services {
         self.want_privacy = cfg.module_active("live") && cfg.live.privacy;
         self.sync_privacy();
 
+        // The stats sampler sleeps until the stats page asks for a reading.
+        let want_stats = cfg.module_active("stats");
+        match (want_stats, self.stats.is_some()) {
+            (true, false) => self.stats = stats::StatsService::start(self.bus.clone()),
+            (false, true) => {
+                if let Some(s) = self.stats.take() {
+                    s.stop();
+                }
+            }
+            _ => {}
+        }
+
         // The Downloads-folder watcher: restarted if the watched folder was changed.
         let want_downloads = cfg.module_active("live") && cfg.live.downloads;
         let running_dir = self.downloads.as_ref().map(|d| d.setting().to_string());
@@ -273,6 +288,12 @@ impl Services {
                 }
                 true
             }
+            Command::Stats(c) => {
+                if let Some(s) = &self.stats {
+                    s.command(*c);
+                }
+                true
+            }
             // Handled by the app itself (they need the UI thread or the config path).
             Command::OpenUrl(_) | Command::OpenConfig | Command::Chime | Command::Reveal(_) => {
                 false
@@ -320,6 +341,9 @@ impl Services {
         }
         if let Some(d) = self.downloads.take() {
             d.stop();
+        }
+        if let Some(s) = self.stats.take() {
+            s.stop();
         }
         // Last: it flushes whatever the modules saved a moment ago.
         if let Some(s) = self.store.take() {

@@ -455,6 +455,45 @@ fn modules_sheet(out: &str, theme: Theme) {
             data: Some(saved.into()),
         }),
     )]);
+    // System stats: a minute of readings (a busy stretch in the middle), on battery.
+    let reading = |i: usize| {
+        let x = i as f32;
+        let load = 22.0 + 18.0 * (x * 0.21).sin() + if (24..40).contains(&i) { 38.0 } else { 0.0 };
+        Event::new(
+            Source::Local,
+            EventKind::Stats(std::sync::Arc::new(notch_core::events::StatsSnapshot {
+                cpu: Some(load.clamp(0.0, 100.0)),
+                mem_used: (9.4 + 0.02 * x as f64 * 1.0e0) as u64 * 1024 * 1024 * 1024
+                    + (x as u64) * 12_000_000,
+                mem_total: 16 * 1024 * 1024 * 1024,
+                gpu: Some(
+                    (8.0 + 10.0 * (x * 0.33).cos().abs()
+                        + if (30..38).contains(&i) { 40.0 } else { 0.0 })
+                    .clamp(0.0, 100.0),
+                ),
+                net: Some((
+                    (900_000.0
+                        + 700_000.0 * (x * 0.4).sin().abs()
+                        + if (26..44).contains(&i) {
+                            5_200_000.0
+                        } else {
+                            0.0
+                        }) as f64,
+                    (60_000.0 + 40_000.0 * (x * 0.9).cos().abs()) as f64,
+                )),
+                power: Some(notch_core::events::PowerStatus {
+                    battery: notch_core::events::BatteryInfo {
+                        percent: 82,
+                        charging: false,
+                    },
+                    plugged: false,
+                    secs_left: Some(3 * 3600 + 14 * 60),
+                    saver: false,
+                }),
+            })),
+        )
+    };
+    host.dispatch((0..60).map(reading).collect());
     // Live activities: a call on the microphone and camera, two downloads, two quick timers.
     let timers = format!(
         r#"{{"items":[{{"id":1,"label":"10 min","end":{},"total":600}},

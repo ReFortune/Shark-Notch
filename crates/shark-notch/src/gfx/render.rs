@@ -610,6 +610,25 @@ impl Renderer {
                         &self.round_stroke,
                     );
                 },
+                DrawCmd::Shape { path, fill, stroke } => {
+                    if path.cmds.is_empty() {
+                        continue;
+                    }
+                    let geom = self.geometry(gpu, path)?;
+                    unsafe {
+                        if let Some(c) = fill {
+                            dc.FillGeometry(&geom, self.set_brush(*c, alpha), None::<&ID2D1Brush>);
+                        }
+                        if let Some((w, c)) = stroke {
+                            dc.DrawGeometry(
+                                &geom,
+                                self.set_brush(*c, alpha),
+                                *w,
+                                &self.round_stroke,
+                            );
+                        }
+                    }
+                }
                 DrawCmd::Text {
                     rect,
                     text,

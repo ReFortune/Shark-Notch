@@ -255,6 +255,16 @@ pub fn warm_primitives(list: &mut DrawList, theme: &Theme, image: Option<ImageId
     if let Some(id) = image {
         cv.image(id, r(200.0, 50.0, 24.0, 24.0), 6.0);
     }
+    // A sparkline: filled and stroked path geometry.
+    cv.sparkline(
+        r(232.0, 52.0, 60.0, 20.0),
+        &[0.1, 0.6, 0.3, 0.9, 0.4],
+        5,
+        (0.0, 1.0),
+        theme.accent,
+        1.5,
+        Some(theme.accent.with_alpha(0.2)),
+    );
     cv.push_clip(r(4.0, 76.0, 60.0, 20.0), 8.0);
     cv.push_group(0.8, 0.96, Vec2::new(30.0, 86.0));
     cv.round_rect(r(4.0, 76.0, 60.0, 20.0), 4.0, theme.accent);
