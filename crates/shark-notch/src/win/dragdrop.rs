@@ -311,11 +311,17 @@ mod tests {
             hr == S_OK,
             "it offers CF_HDROP (QueryGetData returned {hr:?})"
         );
-        let mut got = paths_in(&data);
-        got.sort();
-        let mut want = vec![a.clone(), b.clone()];
-        want.sort();
-        assert_eq!(got, want);
+        // The shell hands back long, normalised names while `temp_dir()` may be an 8.3 short path
+        // (`RUNNER~1`): compare what the paths *resolve to*.
+        let canon = |ps: Vec<PathBuf>| {
+            let mut v: Vec<PathBuf> = ps
+                .into_iter()
+                .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(canon(paths_in(&data)), canon(vec![a.clone(), b.clone()]));
         let _ = std::fs::remove_dir_all(a.parent().unwrap());
         unsafe { OleUninitialize() };
     }
