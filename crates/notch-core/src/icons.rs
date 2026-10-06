@@ -54,7 +54,7 @@ fn polyline(pts: &[(f32, f32)], closed: bool) -> Path {
 
 /// Full circle as four cubic Béziers.
 pub fn circle_path(cx: f32, cy: f32, r: f32) -> Path {
-    let k = 0.552_284_75 * r;
+    let k = 0.552_284_7 * r;
     let mut path = Path::new();
     path.move_to(p(cx + r, cy));
     path.cubic_to(p(cx + r, cy + k), p(cx + k, cy + r), p(cx, cy + r));
@@ -97,7 +97,7 @@ pub fn arc_path(cx: f32, cy: f32, r: f32, start_deg: f32, sweep_deg: f32) -> Pat
 /// Rounded rectangle with a uniform circular radius (for icon bodies).
 pub fn rrect_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> Path {
     let r = r.min(w * 0.5).min(h * 0.5);
-    let k = 0.552_284_75 * r;
+    let k = 0.552_284_7 * r;
     let (x1, y1) = (x + w, y + h);
     let mut path = Path::new();
     path.move_to(p(x + r, y));

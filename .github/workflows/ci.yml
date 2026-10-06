@@ -1,0 +1,77 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  core:
+    name: core tests (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component clippy rustfmt && rustup default stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-core-${{ hashFiles('Cargo.lock') }}
+          restore-keys: linux-core-
+      - run: cargo fmt --all -- --check
+      - run: cargo test -p notch-core
+      - run: cargo clippy -p notch-core --all-targets -- -D warnings
+
+  windows:
+    name: windows (build, test, selftest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+          rustc --version
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-app-${{ hashFiles('Cargo.lock') }}
+          restore-keys: windows-app-
+      - name: Build (release)
+        run: cargo build --release -p shark-notch
+      - name: Tests (core + app)
+        run: cargo test -p notch-core -p shark-notch
+      - name: Clippy (app)
+        run: cargo clippy -p shark-notch --all-targets -- -D warnings
+      - name: Self-test (real window, D3D11/D2D/DirectComposition, scripted animations)
+        shell: pwsh
+        if: ${{ hashFiles('crates/shark-notch/src/diag.rs') != '' }}
+        run: |
+          $out = Join-Path $PWD "selftest.txt"
+          $p = Start-Process -FilePath ".\target\release\shark-notch.exe" -ArgumentList "--selftest","--out",$out -PassThru -Wait -NoNewWindow
+          Write-Host "exit code: $($p.ExitCode)"
+          if (Test-Path $out) { Get-Content $out } else { Write-Host "no selftest output produced" }
+          exit $p.ExitCode
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shark-notch-windows
+          path: |
+            target/release/shark-notch.exe
+            selftest.txt
+          if-no-files-found: ignore

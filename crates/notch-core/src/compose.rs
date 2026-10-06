@@ -67,7 +67,7 @@ pub fn compose(
         return;
     }
     let rect = Rect::new((window_w - shape.w) * 0.5, frame.y, shape.w, shape.h);
-    let outline = m.outline.then(|| (1.0, theme.hairline));
+    let outline = m.outline.then_some((1.0, theme.hairline));
     let mut cv = Canvas::new(list, theme);
     cv.push(DrawCmd::Notch {
         shape,
