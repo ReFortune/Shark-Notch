@@ -351,6 +351,7 @@ impl Services {
                     ControlCmd::Snip
                         | ControlCmd::OpenFocusSettings
                         | ControlCmd::OpenRadioSettings
+                        | ControlCmd::OpenAirplaneSettings
                 ) {
                     return false;
                 }

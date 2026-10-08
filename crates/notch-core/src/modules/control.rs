@@ -222,8 +222,12 @@ impl Control {
     fn click_radio(&mut self, kind: RadioKind, cx: &mut Cx) -> bool {
         match self.radio(kind, cx.now) {
             Radio::Unavailable => false,
-            Radio::Denied | Radio::Disabled => {
+            Radio::Denied => {
                 cx.command(Command::Control(ControlCmd::OpenRadioSettings));
+                true
+            }
+            Radio::Disabled => {
+                cx.command(Command::Control(ControlCmd::OpenAirplaneSettings));
                 true
             }
             current @ (Radio::On | Radio::Off) => {
@@ -940,7 +944,7 @@ mod tests {
         assert!(t.click(HIT_BLUETOOTH));
         assert_eq!(
             t.commands(),
-            vec![Command::Control(ControlCmd::OpenRadioSettings)]
+            vec![Command::Control(ControlCmd::OpenAirplaneSettings)]
         );
     }
 

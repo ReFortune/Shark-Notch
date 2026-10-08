@@ -6,9 +6,10 @@ removing `"live"` from `[modules] order` hides the page).
 
 The collapsed pill has room for the most important activity only: **privacy first** (a microphone you
 did not expect to be live must never hide behind a timer), then a **timer**, then a **download**. The
-page lists everything. Nothing here polls on a timer: the platform pushes events, and the only
-wake-ups are a timer's end, the minute turning over on a timer chip, and — while a download is being
-written — a size check once a second.
+page lists everything. Nothing here polls while the notch is collapsed: the platform pushes events, and
+the only wake-ups are a timer's end, the minute turning over on a timer chip, and — while a download
+is being written — a size check once a second. While the Live page itself is open it also redraws once
+a second, to keep the countdowns moving.
 
 ## Microphone and camera in use
 
@@ -55,7 +56,7 @@ tap one to start a timer, **×** to cancel it. At most three run at once, from 1
 
 ## Downloads
 
-A chip with the size so far and the speed (`12 MB/s`) while a browser is downloading, and a banner
+A chip with the speed (`12 MB/s`; the size so far until a speed is known) while a browser is downloading, and a banner
 **"Download complete — name — size"** with a **Show** button when it finishes. The page lists the
 downloads in progress.
 

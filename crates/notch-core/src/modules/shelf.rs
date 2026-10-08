@@ -5,7 +5,7 @@
 //! The shelf holds *references*, never copies and never takes ownership: removing a tile only
 //! forgets it, and dragging out offers copy/link (never move), so nothing a user owns can be moved
 //! or deleted from here. Files arrive as `FileDropped` events from the platform's OLE drop target
-//! (or, in phase 11, from the iPhone listener — same event, same rendering, a small source tag).
+//! (or, in phase 11, from the iPhone listener — same event, same rendering, no tag).
 
 use std::sync::Arc;
 

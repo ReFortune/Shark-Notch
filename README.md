@@ -4,8 +4,8 @@ A tiny, animated overlay at the top-centre of your Windows screen — the MacBoo
 idea — written in **Rust** with the `windows` crate. No Electron, no WebView2, no browser engine:
 **Direct2D + DirectComposition + DirectWrite**, one small process, event-driven everywhere it can be.
 
-> **Status.** All eleven planned phases are implemented, and every commit builds, passes its tests and
-> runs a scripted self-test of the real app on a Windows CI runner. **What nobody has done yet is run
+> **Status.** All eleven planned phases are implemented, and every push is built, tested and put through a
+> scripted self-test of the real app on a Windows CI runner. **What nobody has done yet is run
 > it on your hardware.** The build machine was a Linux container plus a virtual Windows machine with
 > no GPU, no audio device, no battery and no iPhone, so each page below says what that leaves
 > unproven. Read [What is and is not verified](#what-is-and-is-not-verified) before you trust a
@@ -43,11 +43,13 @@ setting.
 
 **Stays out of the way.**
 
-* It never takes focus (`WS_EX_NOACTIVATE`), has no taskbar button and no main window — a tray icon
-  only (hideable), one instance, optional start with Windows.
+* It does not take focus (`WS_EX_NOACTIVATE`): hovering, clicking its buttons and scrolling leave the
+  window you were typing in alone. The one exception is the Focus page's *Add task* field, which takes
+  the keyboard until Enter or Esc. It has no taskbar button and no main window — a tray icon only
+  (hideable), one instance, optional start with Windows.
 * It is **hidden from screenshots and screen sharing** by default (`exclude_from_capture`).
 * It **steps aside while a game or any fullscreen app is in front**: the notch hides, the modules
-  pause, the GPU is released, hover is off; notifications queue silently and a "missed" dot shows
+  pause, the GPU is released, hover is off; notifications queue silently and a "missed" badge shows
   afterwards. Detection uses `SetWinEventHook` (out of context) and the monitor's coverage, with
   `SHQueryUserNotificationState` as a second opinion; nothing polls for it.
 * **No hooks, no injection.** It never injects into another process and installs no keyboard or mouse
@@ -68,13 +70,16 @@ cargo build --release -p shark-notch
 .\target\release\shark-notch.exe          # runs in the tray; Ctrl+Alt+N toggles the notch
 ```
 
-On first run a commented `config.toml` is written to `%APPDATA%\SharkNotch\` (tray menu →
+If there is no `config.toml` yet, a commented one is written to `%APPDATA%\SharkNotch\` (tray menu →
 *Open settings (config.toml)*). Saved changes apply immediately; a mistake keeps the previous
-settings and shows the error in the tray tooltip. Logs and saved data live in
-`%LOCALAPPDATA%\SharkNotch\` (`notch.log`, pinned clips, tasks, the iPhone inbox).
+settings and shows the error in the tray tooltip. A `config.toml` that exists but cannot be read
+(saved as UTF-16, locked) is never overwritten: the notch runs on the defaults and says so. Logs and
+saved data live in `%LOCALAPPDATA%\SharkNotch\` (`notch.log`, pinned clip text, tasks and timers,
+the iPhone token and inbox).
 
-The tray menu: open/close the notch, pause, open or reload the settings, start with Windows, copy a
-frame-time report, copy diagnostics, hide the tray icon, quit.
+The tray menu: open/close the notch, pause, open or reload the settings, start with Windows (written
+to `config.toml` as `autostart`, which is what decides at every launch), copy a frame-time report,
+copy diagnostics, hide the tray icon, quit.
 
 Command-line switches:
 
@@ -83,6 +88,8 @@ Command-line switches:
 | `--selftest [--out file]` | Scripted run of the real app; prints frame-time bursts, idle CPU/RAM with the GPU warm and released, the GPU warm-up cost, and a pass/fail line for every scenario. Add `--no-exclude --light-probe` to also probe the actual screen pixels, and `--registry-probe` to let it write (and remove) a fake microphone-use record to test the privacy chip. |
 | `--config path` | Use a different config file. |
 | `--console` | Echo the log to the console that launched it. |
+
+Anything else on the command line is ignored (the *start with Windows* entry passes `--autostart`, which changes nothing).
 
 `--selftest` uses a scratch data folder and its own configuration; it never touches your settings or
 saved data. **Run it on your machine** if anything feels off: it prints the numbers that matter for
@@ -112,7 +119,7 @@ shark-notch (Windows glue only)
   app          the controller + single message loop; GPU residency; suspension; hot reload
   gfx::stack   D3D11 -> DXGI -> D2D -> DirectWrite -> DirectComposition (power-efficient GPU first)
   gfx::stage   the composition window + swap chain (never resized mid-animation)
-  gfx::render  display list -> Direct2D          gfx::pill  display list -> CPU layered window
+  gfx::render  display list -> Direct2D          gfx::pill  the collapsed silhouette -> CPU layered window
   services::*  OS-backed event producers (media, clipboard, shelf, notifications, calendar, privacy,
                downloads, stats, control, phone), alive only while their module is
   win::*       sampler, fullscreen watcher, session, tray, hotkeys, autostart, single instance, ...
@@ -133,7 +140,7 @@ ordinary services that produce events; modules never call Win32, they send `Comm
 
 **How idle stays ~0 %.** The loop waits in `MsgWaitForMultipleObjectsEx` with an infinite timeout unless
 a deadline is pending; the swap chain's frame-latency handle is in the wait set *only while animating*;
-a module's poll runs only while its page is expanded and visible; the idle pill is a few-hundred-byte
+a module's poll runs only while its page is expanded and visible; the idle pill is a few-kilobyte
 bitmap in a layered window, and the GPU stack exists only while something is drawn (it is pre-warmed
 when the cursor approaches, so the first animation does not wait for it).
 
@@ -145,20 +152,22 @@ animations. Measured by `--selftest` on a CI virtual machine (a **software rende
 
 | | |
 |---|---|
-| Idle CPU, pill collapsed | about **0.2 %** of one core on a busy VM (no timers; the only recurring wake-up is the 10 Hz cursor sample) |
-| Memory, GPU stack warm | **11.8 MiB** private working set (40 MiB working set incl. shared DLLs) |
-| Memory, GPU stack released | **6.6 MiB** committed (the working set is trimmed to under 1 MiB) |
-| Bringing the GPU stack back | 43 ms; creating it cold: 230 ms (so it is pre-warmed when the cursor approaches) |
-| A page open and polling (stats, once a second) | 0.5 % of a core; **nothing** is read once it closes |
-| The iPhone listener, switched on, nobody connected | 0.2 % (a thread asleep in `accept()`) |
+| Idle CPU, pill collapsed | **0.02 %** of one core (exact cycle counts over 5 s, the app alone; no timers, the only recurring wake-up is the 10 Hz cursor sample) |
+| Memory, GPU stack warm | **12.7 MiB** private working set at idle (41 MiB working set incl. shared DLLs) |
+| Memory, GPU stack released | **6.4 MiB** committed (the working set is trimmed to 0.2 MiB) |
+| Memory after a session that opened every page | **24 MiB** committed with the GPU released; more with the GPU warm (see [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)) |
+| Bringing the GPU stack back | 39 ms; creating it cold: 174 ms (so it is pre-warmed when the cursor approaches) |
+| A page open and polling (stats, once a second) | 0.3 % of a core; **nothing** is read once it closes |
+| The iPhone listener, switched on, nobody connected | 0.02 % (a thread asleep in `accept()`), the same as off |
 
 **Read these with care.** A software renderer is not your GPU: a real driver loads tens of MB of
 user-mode DLLs, which is exactly why the GPU stack is released when nothing is drawn, but it also
-means *your* warm number will be higher than 11.8 MiB. The same VM also made frames hitch: the
-self-test counts every frame that took longer than 1.5× the refresh interval and reports the
-worst; on the software renderer a first frame of something new can take 100–300 ms. Nothing here
-proves your machine hitch-free: run `shark-notch.exe --selftest` on it, and see
-[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for how to read the report.
+means *your* warm number will be higher than 12.7 MiB. The same VM also made frames hitch, and the
+report does not hide it: of 782 frames in animations, 89 were later than 1.5× the refresh interval,
+half of them because the software renderer needs about 16 ms to draw an opening panel, half
+because the virtual display presented late; a few frames of 100–800 ms spent all their time inside
+Direct2D's `EndDraw` (see [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for what is and is not known
+about them). Nothing here proves your machine hitch-free: run `shark-notch.exe --selftest` on it.
 
 ## What is and is not verified
 

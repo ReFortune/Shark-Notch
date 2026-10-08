@@ -333,12 +333,21 @@ impl App {
                     Config::default()
                 }
             },
-            Err(_) => {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // First run: write the commented defaults so there is something to edit.
                 if let Some(dir) = config_path.parent() {
                     let _ = std::fs::create_dir_all(dir);
                 }
                 let _ = std::fs::write(&config_path, notch_core::config::DEFAULT_TOML);
+                Config::default()
+            }
+            Err(e) => {
+                // Something is there but cannot be read (saved as UTF-16, locked, no permission):
+                // it is the user's file, so it is left exactly as it is; the defaults run meanwhile.
+                warnings.push(format!(
+                    "cannot read {}: {e}; running on the defaults and leaving the file alone",
+                    config_path.display()
+                ));
                 Config::default()
             }
         };
@@ -1272,11 +1281,13 @@ impl App {
             Command::Control(
                 cc @ (ControlCmd::Snip
                 | ControlCmd::OpenFocusSettings
-                | ControlCmd::OpenRadioSettings),
+                | ControlCmd::OpenRadioSettings
+                | ControlCmd::OpenAirplaneSettings),
             ) => {
                 let uri = match cc {
                     ControlCmd::Snip => "ms-screenclip:",
                     ControlCmd::OpenFocusSettings => "ms-settings:quietmomentshome",
+                    ControlCmd::OpenAirplaneSettings => "ms-settings:network-airplanemode",
                     _ => "ms-settings:privacy-radios",
                 };
                 if self.opts.selftest {
@@ -1434,6 +1445,9 @@ impl App {
             let instant = self.fs_active || self.locked || self.display_off;
             if instant {
                 self.shell.suspend_now(now);
+                // The host still believes the page that was open is on screen, and would go on
+                // polling it (stats, controls) behind a game: tell it nothing is.
+                self.sync_view();
                 self.burst = false;
                 let _ = self.recorder.finish();
                 if let Some(s) = self.stage.as_mut() {
@@ -1629,8 +1643,9 @@ impl App {
             MenuCmd::ReloadConfig => self.reload_config(),
             MenuCmd::Autostart => {
                 let on = !autostart::is_enabled();
-                if let Err(e) = autostart::set(on) {
-                    self.set_status(format!("autostart failed: {e}"));
+                match autostart::set(on) {
+                    Ok(()) => self.remember_autostart(on),
+                    Err(e) => self.set_status(format!("autostart failed: {e}")),
                 }
             }
             MenuCmd::CopyFrames => {
@@ -1773,6 +1788,29 @@ impl App {
     }
 
     // ----- config -----------------------------------------------------------------------------
+
+    /// Write the tray's choice into `config.toml`. That file decides `autostart` at every launch, so
+    /// a choice that lived only in the Run entry would be undone by the next start. Only that one
+    /// line changes (see `notch_core::config::with_bool`); the rest of the file is the user's.
+    fn remember_autostart(&mut self, on: bool) {
+        self.cfg.general.autostart = on;
+        let path = self.config_path.clone();
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            self.set_status("autostart is set, but config.toml could not be read to remember it");
+            return;
+        };
+        let edited = notch_core::config::with_bool(&text, "general", "autostart", on);
+        if edited == text {
+            return;
+        }
+        let tmp = path.with_extension("toml.tmp");
+        if let Err(e) = std::fs::write(&tmp, &edited).and_then(|()| std::fs::rename(&tmp, &path)) {
+            let _ = std::fs::remove_file(&tmp);
+            self.set_status(format!(
+                "autostart is set, but config.toml could not be updated: {e}"
+            ));
+        }
+    }
 
     fn reload_config(&mut self) {
         let path = self.config_path.clone();

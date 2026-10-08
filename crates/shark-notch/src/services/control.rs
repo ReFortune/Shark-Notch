@@ -434,7 +434,8 @@ fn run(rx: &Receiver<Req>, bus: &BusSender) {
                 // These open Windows pages; the UI thread does that (see `App::exec`).
                 ControlCmd::Snip
                 | ControlCmd::OpenFocusSettings
-                | ControlCmd::OpenRadioSettings => {}
+                | ControlCmd::OpenRadioSettings
+                | ControlCmd::OpenAirplaneSettings => {}
             }
         }
         if answer {

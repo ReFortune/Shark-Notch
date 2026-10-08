@@ -364,6 +364,53 @@ if the build deviated, it is here.
 * **`PERFORMANCE.md`** was written at the end, from the CI logs of each phase's run, not appended after
   every phase as §7 says. The numbers are the self-test's own; the per-phase table is in that file.
 
+**Smaller differences in the details** (found by reading every statement of the proposal against the
+code at the end; the sections above are left as written)
+
+* **D3 / §5.7, hover.** The sampler also runs at 30 Hz the whole time the notch is expanded or showing
+  a banner, and at 60 Hz while a drag is armed (not only inside the approach rectangles). The
+  approach margin defaults to 140 DIP around the 200×6 DIP zone, which is about 240 DIP from the
+  centre rather than "~250 px". A drag disarms when the button is released or when the cursor stays
+  outside the drag zone for 400 ms; `DragEnter` is not consulted for that.
+* **D7 / phase 3.** The level meter is read by a small thread about 120 times a second (8 ms sleeps),
+  not at 30 Hz; the thread exists only while a track is playing *and* the media page is open. Album
+  art is decoded to at most 192 px, not 128.
+* **D10.** What is saved in `%LOCALAPPDATA%\SharkNotch\`: pinned clipboard text (`pins.json`; the history
+  itself is never written), tasks and the timer (`pomodoro.json`), quick timers (`timers.json`), the
+  iPhone token and inbox, and the log. There is no shelf index: the shelf is not persisted.
+* **§2, tier 2.** CI builds on a Windows runner; `cargo check --target x86_64-pc-windows-msvc` is what
+  was used on the Linux build machine, not a CI step. The tray's *Copy diagnostics* copies a snapshot
+  of the session (monitor, refresh, GPU state, memory and CPU now, frame bursts, the last log lines);
+  `--selftest` is what runs the measurements and the pass/fail checks.
+* **§3.** The window region is set when the notch becomes interactive (the start of an expansion), to
+  the destination rectangle plus 6 DIP, not only at settled states.
+* **§4.** `docs/` also holds `CALENDAR_AND_FOCUS`, `LIVE`, `STATS` and `CONTROL`. The file logger is 140
+  lines and the civil-date maths 160 (plus tests), not 60 and 80.
+* **§5.1.** One lock is shared with the render path: the image cache is a `Mutex` that producers fill
+  and the renderer reads.
+* **§5.2 / §5.3 sketches.** The code sketches show the idea, not the final types. `EventMask` is a `u32`
+  bit set over 22 kinds; there are no `ActivityStarted/Progress/Ended` events (Privacy, Downloads and
+  DownloadDone are separate kinds); a module has `chip_width` and `chip_priority` rather than a
+  `chip()` method. `events.rs` and `module.rs` are the truth.
+* **Lazy modules.** Only the stats and command-centre workers and the audio meter are created on their
+  first request. For an enabled module, the services behind it (SMTC and WinRT, the clipboard
+  listener, notifications, calendar feeds, the microphone watcher, the downloads watcher, the shelf,
+  the iPhone listener) start at launch and idle until something happens; they are stopped when the
+  module is switched off, and paused while a fullscreen app is in front (the iPhone listener keeps
+  listening, as the "Fullscreen suspension" point above says).
+* **Phase 5.** Drag-out builds its data object from `SHCreateShellItemArrayFromIDLists` and
+  `BHID_DataObject`, not `SHCreateDataObject` (see the comment in `win/dragdrop.rs` for why).
+* **Phase 6.** The "fallback re-query after foreground changes" was **not built**: the page re-queries
+  when it is opened, and nothing else polls. If `NotificationChanged` turns out to be unreliable on your
+  machine, that is the missing piece.
+* **Phase 10.** The snip button is `ms-screenclip:` only; no input is synthesised anywhere (there is
+  no `SendInput`).
+* **§7.** Idle CPU is measured from `QueryProcessCycleTime` over 5 s windows (`GetProcessTimes` is
+  printed beside it, as a cross-check, because it only advances in 15 ms ticks); memory is the private
+  working set (`PrivateWorkingSetSize`) and the commit (`PrivateUsage`). CI does not gate on hitches
+  (see above).
+* **§5.8, "a missed dot".** It is a bell with a count (capped at "9+").
+
 **Not done**
 
 * **Progress for the app's own transfers** (D8: shelf copies, phone uploads). Nothing shows a progress

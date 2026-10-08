@@ -216,7 +216,7 @@ impl Default for Performance {
 pub struct Fullscreen {
     pub enabled: bool,
     pub scope: FullscreenScope,
-    /// Show a small dot after a fullscreen session if notifications were missed.
+    /// Show a small badge (a bell with a count) after a fullscreen session if notifications were missed.
     pub show_missed_indicator: bool,
     /// Allow the `hotkeys.peek` key to show the notch over borderless-fullscreen apps.
     pub peek_over_fullscreen: bool,
@@ -963,12 +963,99 @@ fn unknown_keys(user: &toml::Value, schema: &toml::Value, path: &str, out: &mut 
     }
 }
 
+/// Set the boolean `key` in `[section]` of a config file's text and change nothing else: comments,
+/// order, spacing (the `#` of a trailing comment keeps its column) and line endings stay as they are.
+/// A key that is missing is added right under its section header, a section that is missing at the
+/// end. The tray's "Start with Windows" uses it, so that the choice is written where the next launch
+/// looks for it (the file is the source of truth for `autostart`).
+pub fn with_bool(text: &str, section: &str, key: &str, value: bool) -> String {
+    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let new = if value { "true" } else { "false" };
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+
+    let (mut header, mut target, mut in_section) = (None, None, false);
+    for (i, raw) in lines.iter().enumerate() {
+        let t = raw.trim();
+        if t.starts_with('[') {
+            let name = t.trim_start_matches('[').split(']').next().map(str::trim);
+            in_section = !t.starts_with("[[") && name == Some(section);
+            if in_section && header.is_none() {
+                header = Some(i);
+            }
+        } else if in_section
+            && target.is_none()
+            && !t.starts_with('#')
+            && t.split_once('=').is_some_and(|(k, _)| k.trim() == key)
+        {
+            target = Some(i);
+        }
+    }
+
+    let mut out = String::with_capacity(text.len() + 32);
+    match (header, target) {
+        (_, Some(i)) => {
+            for (n, raw) in lines.iter().enumerate() {
+                if n == i {
+                    out.push_str(&replace_value(raw, new));
+                } else {
+                    out.push_str(raw);
+                }
+            }
+        }
+        (Some(h), None) => {
+            for (n, raw) in lines.iter().enumerate() {
+                out.push_str(raw);
+                if n == h {
+                    if !raw.ends_with('\n') {
+                        out.push_str(nl);
+                    }
+                    out.push_str(&format!("{key} = {new}{nl}"));
+                }
+            }
+        }
+        (None, None) => {
+            out.push_str(text);
+            if !text.is_empty() && !text.ends_with('\n') {
+                out.push_str(nl);
+            }
+            out.push_str(&format!("{nl}[{section}]{nl}{key} = {new}{nl}"));
+        }
+    }
+    out
+}
+
+/// `line` (`key = old   # comment`) with the value replaced by `new`, the comment kept in its column.
+fn replace_value(line: &str, new: &str) -> String {
+    let Some(eq) = line.find('=') else {
+        return line.to_string();
+    };
+    let after = &line[eq + 1..];
+    let rest = after.trim_start_matches([' ', '\t']);
+    let lead = &after[..after.len() - rest.len()];
+    let old_len = rest
+        .find(|c: char| c.is_whitespace() || c == '#')
+        .unwrap_or(rest.len());
+    let mut tail = rest[old_len..].to_string();
+    if tail.starts_with(' ') {
+        let spaces = tail.len() - tail.trim_start_matches(' ').len();
+        if new.len() > old_len {
+            // `false` -> `true` is one character shorter and the other way round one longer:
+            // take the difference from (or give it to) the gap in front of the comment.
+            let d = (new.len() - old_len).min(spaces.saturating_sub(1));
+            tail.drain(..d);
+        } else {
+            tail.insert_str(0, &" ".repeat(old_len - new.len()));
+        }
+    }
+    format!("{}{lead}{new}{tail}", &line[..eq + 1])
+}
+
 /// The commented file written on first run. A test keeps it in sync with `Config::default()`.
 pub const DEFAULT_TOML: &str = r##"# Shark Notch configuration. Saved changes are applied immediately; a mistake keeps the previous
 # settings and shows the error in the tray tooltip and the log.
 
 [general]
-autostart = false              # start with Windows (also toggleable from the tray menu)
+autostart = false              # start with Windows (the tray menu's switch writes this line too)
 tray_icon = true               # if false, run the executable again to bring the icon back
 monitor = "primary"            # "primary", a number like "2", or a device name like "\\\\.\\DISPLAY2"
 exclude_from_capture = true    # hide the notch from screenshots / screen sharing / recordings
@@ -1112,6 +1199,61 @@ show_week = true
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setting_a_boolean_keeps_the_comment_where_it_was() {
+        let text =
+            "[general]\nautostart = false              # start with Windows\ntray_icon = true\n";
+        let on = with_bool(text, "general", "autostart", true);
+        assert_eq!(
+            on,
+            "[general]\nautostart = true               # start with Windows\ntray_icon = true\n"
+        );
+        assert_eq!(with_bool(&on, "general", "autostart", false), text);
+        // Setting what is already set changes nothing.
+        assert_eq!(with_bool(text, "general", "autostart", false), text);
+    }
+
+    #[test]
+    fn the_shipped_file_survives_a_round_trip_through_the_tray_toggle() {
+        let on = with_bool(DEFAULT_TOML, "general", "autostart", true);
+        let l = Config::parse(&on).expect("still parses");
+        assert!(l.config.general.autostart);
+        assert!(l.warnings.is_empty(), "{:?}", l.warnings);
+        let mut expected = Config::default();
+        expected.general.autostart = true;
+        assert_eq!(l.config, expected, "only autostart changed");
+        assert_eq!(with_bool(&on, "general", "autostart", false), DEFAULT_TOML);
+    }
+
+    #[test]
+    fn only_the_named_section_and_an_uncommented_key_are_touched() {
+        let text = "# autostart = true\n[other]\nautostart = false\n[general]\n# autostart = false\nautostart = false\n";
+        let out = with_bool(text, "general", "autostart", true);
+        assert_eq!(
+            out,
+            "# autostart = true\n[other]\nautostart = false\n[general]\n# autostart = false\nautostart = true\n"
+        );
+    }
+
+    #[test]
+    fn a_missing_key_or_section_is_added_and_line_endings_are_kept() {
+        let out = with_bool(
+            "[general]\r\ntray_icon = true\r\n",
+            "general",
+            "autostart",
+            true,
+        );
+        assert_eq!(out, "[general]\r\nautostart = true\r\ntray_icon = true\r\n");
+        let out = with_bool("[hover]\ndwell_ms = 150", "general", "autostart", true);
+        assert_eq!(
+            out,
+            "[hover]\ndwell_ms = 150\n\n[general]\nautostart = true\n"
+        );
+        let out = with_bool("", "general", "autostart", false);
+        assert_eq!(out, "\n[general]\nautostart = false\n");
+        assert!(Config::parse(&out).is_ok());
+    }
 
     #[test]
     fn shipped_default_file_equals_default_config() {

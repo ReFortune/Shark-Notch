@@ -46,10 +46,9 @@ pub struct GpuStack {
 const CACHE_KEEP_MS: u32 = 60_000;
 
 /// How much texture memory Direct2D may accumulate (clip layers, glyph pages, image copies) before it
-/// purges its caches. The notch draws a few small shapes and some text, so the budget is modest; but
-/// one that is too tight makes Direct2D throw its caches away and rebuild them while a page is
-/// open (it was 8 MiB; the default is 64).
-const TEXTURE_BUDGET: u64 = 32 * 1024 * 1024;
+/// purges its caches. The notch draws a few small shapes and some text, so a big cache is wasted
+/// memory. (32 MiB was tried against the long frames; it changed nothing, see docs/PERFORMANCE.md.)
+const TEXTURE_BUDGET: u64 = 8 * 1024 * 1024;
 
 const LEVELS: [D3D_FEATURE_LEVEL; 4] = [
     D3D_FEATURE_LEVEL_11_1,

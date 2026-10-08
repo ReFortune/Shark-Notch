@@ -18,8 +18,11 @@ net_bits = false      # Mbps instead of MB/s
 visible in the expanded notch; each poll just sends a "take a reading" request to a worker thread.
 With the notch collapsed, on another page, hidden for a fullscreen app, locked or paused:
 
-* nothing asks for a reading, so nothing is read — the worker thread is blocked in `recv()` with no
-  timer (verified by the self-test, which counts the readings after closing the page: it must be zero);
+* nothing asks for a reading, so nothing is read. The worker thread sleeps in `recv()`; its one
+  wake-up of its own comes about 5 s after the last reading, when it lets go of the counter query and
+  the last reading, and then it sleeps again with no timer. The self-test checks this by counting the
+  readings after closing the page (zero), and again when a fullscreen app takes over the screen while
+  the page is still open (zero);
 * the history is thrown away, so reopening starts a clean minute instead of a stale one with a gap.
 
 A rate needs two readings, so the first request after the page opens takes a baseline, waits a

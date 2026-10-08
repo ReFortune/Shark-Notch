@@ -125,6 +125,9 @@ pub enum ControlCmd {
     OpenFocusSettings,
     /// Open Windows' radio privacy settings (the toggle was refused by a privacy setting).
     OpenRadioSettings,
+    /// Open Windows' airplane-mode settings (a radio is switched off beyond the app's reach: a
+    /// hardware switch, airplane mode, Device Manager).
+    OpenAirplaneSettings,
 }
 
 /// Operations on the iPhone link.

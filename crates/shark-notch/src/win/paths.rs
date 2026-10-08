@@ -22,7 +22,7 @@ pub fn config_dir() -> PathBuf {
     env_dir("APPDATA").join("SharkNotch")
 }
 
-/// `%LOCALAPPDATA%\SharkNotch` — logs and persisted data (clips, shelf index, to-dos).
+/// `%LOCALAPPDATA%\SharkNotch` — logs and persisted data (pinned clip text, tasks and timers, the iPhone token and inbox).
 pub fn data_dir() -> PathBuf {
     match DATA_DIR_OVERRIDE.get() {
         Some(d) => d.clone(),

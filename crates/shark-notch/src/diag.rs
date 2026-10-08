@@ -316,6 +316,9 @@ enum Act {
     StatsClose,
     StatsSettled,
     StatsQuietCheck,
+    StatsFsOpen,
+    StatsFsOn,
+    StatsFsCheck,
     ControlPage,
     ControlCheck,
     ControlClose,
@@ -451,32 +454,35 @@ const SCRIPT: &[(f64, Act)] = &[
     (91.5, Act::StatsClose),
     (92.2, Act::StatsSettled),
     (94.8, Act::StatsQuietCheck),
-    (95.2, Act::ControlPage),
-    (97.4, Act::ControlCheck),
-    (97.6, Act::ControlClose),
-    (98.3, Act::ControlSettled),
-    (100.9, Act::ControlQuietCheck),
-    (101.3, Act::PhoneOn),
-    (101.8, Act::PhoneRun),
-    (103.2, Act::PhoneCheck),
-    (103.4, Act::PhonePage),
-    (105.4, Act::PhonePageCheck),
-    (105.9, Act::PhoneCopyCheck),
-    (106.0, Act::PhoneNewToken),
-    (106.3, Act::PhoneNewTokenCheck),
-    (107.4, Act::PhoneNewTokenResult),
-    (107.5, Act::PhoneClose),
-    (108.8, Act::PhoneIdleBegin),
-    (111.3, Act::PhoneIdleEnd),
-    (111.5, Act::PhoneOff),
-    (112.4, Act::PhoneOffCheck),
-    (112.8, Act::PhoneBusy),
-    (113.4, Act::PhoneBusyCheck),
-    (113.5, Act::PhoneFreed),
-    (114.0, Act::PhoneFreedOff),
-    (114.4, Act::FinalRelease),
-    (116.0, Act::FinalMemory),
-    (116.4, Act::Report),
+    (95.0, Act::StatsFsOpen),
+    (96.4, Act::StatsFsOn),
+    (99.2, Act::StatsFsCheck),
+    (99.6, Act::ControlPage),
+    (101.8, Act::ControlCheck),
+    (102.0, Act::ControlClose),
+    (102.7, Act::ControlSettled),
+    (105.3, Act::ControlQuietCheck),
+    (105.7, Act::PhoneOn),
+    (106.2, Act::PhoneRun),
+    (107.6, Act::PhoneCheck),
+    (107.8, Act::PhonePage),
+    (109.8, Act::PhonePageCheck),
+    (110.3, Act::PhoneCopyCheck),
+    (110.4, Act::PhoneNewToken),
+    (110.7, Act::PhoneNewTokenCheck),
+    (111.8, Act::PhoneNewTokenResult),
+    (111.9, Act::PhoneClose),
+    (113.2, Act::PhoneIdleBegin),
+    (115.7, Act::PhoneIdleEnd),
+    (115.9, Act::PhoneOff),
+    (116.8, Act::PhoneOffCheck),
+    (117.2, Act::PhoneBusy),
+    (117.8, Act::PhoneBusyCheck),
+    (117.9, Act::PhoneFreed),
+    (118.4, Act::PhoneFreedOff),
+    (118.8, Act::FinalRelease),
+    (120.4, Act::FinalMemory),
+    (120.8, Act::Report),
 ];
 
 const CLIP_TEXT: &str = "Selftest clipboard text";
@@ -529,6 +535,10 @@ impl SelfTest {
     /// often loads one, and loading from a cold disk is a hitch in its own right. `next` names the
     /// step about to run; the new modules were brought in while the previous one was running.
     fn note_new_modules(&mut self, next: &str) {
+        // Listing the modules costs a few milliseconds: not inside a window that measures CPU use.
+        if self.idle_begin.is_some() || self.stats_begin.is_some() || self.phone_idle.is_some() {
+            return;
+        }
         let now = stall::module_names();
         let new: Vec<&String> = now
             .iter()
@@ -2078,6 +2088,45 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
             if extra != 0 {
                 st.fail("stats: readings kept arriving after the page was closed".into());
             }
+        }
+        // A game takes over the screen while a page is still open: nothing may go on reading behind it.
+        Act::StatsFsOpen => match a.host.page_of("stats") {
+            Some(p) => {
+                st.stats_mark = a.bus_counts[Kind::Stats as usize];
+                a.shell.set_page(now, p);
+                a.expand(Trigger::Hotkey);
+            }
+            None => st.fail("the stats page is not in the ring".into()),
+        },
+        Act::StatsFsOn => {
+            let live = a.bus_counts[Kind::Stats as usize] - st.stats_mark;
+            st.say(format!(
+                "stats: {live} reading(s) while the page was open, then a fullscreen app took over the screen with the page still open"
+            ));
+            if live == 0 {
+                st.fail(
+                    "stats: the reopened page was not being read, so the next check proves nothing"
+                        .into(),
+                );
+            }
+            a.fs_active = true;
+            a.apply_suspension();
+            st.stats_mark = a.bus_counts[Kind::Stats as usize];
+        }
+        Act::StatsFsCheck => {
+            let extra = a.bus_counts[Kind::Stats as usize] - st.stats_mark;
+            let hidden = a.stage.is_none() && a.shell.presence() == Presence::Hidden;
+            st.say(format!(
+                "stats: {extra} reading(s) in the 2.8 s a fullscreen app covered the screen with the page still open (nothing may be measured then); windows hidden and GPU released: {hidden}"
+            ));
+            if extra != 0 {
+                st.fail("stats: the page kept being read behind a fullscreen app".into());
+            }
+            if !hidden {
+                st.fail("stats: the notch did not get out of the way of the fullscreen app".into());
+            }
+            a.fs_active = false;
+            a.apply_suspension();
         }
         Act::ControlPage => {
             // The worker behind the page is created by its first request, not before.

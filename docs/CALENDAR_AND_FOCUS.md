@@ -42,8 +42,8 @@ count, until, `BYDAY` including "second Tuesday" / "last Friday", `BYMONTHDAY` i
 `BYMONTH`, `BYSETPOS`), extra dates, excluded dates, moved or cancelled single instances; cancelled
 events are skipped. A recurring meeting keeps its local time across daylight-saving changes.
 
-Not understood (the event then shows once, at its first date): `BYWEEKNO`, `BYYEARDAY` and
-sub-daily repeats. A time zone name that the feed does not define is read as your local time.
+Not understood (the event then shows once, at its first date): `BYWEEKNO`, `BYYEARDAY`, `BYHOUR`,
+`BYMINUTE`, `BYSECOND` and sub-daily repeats. A time zone name that the feed does not define is read as your local time.
 
 ### The Join button
 
@@ -79,17 +79,18 @@ every fourth session. Press play, pick a task, work.
   hover for ✕. Finished tasks sink to the bottom; *Clear done* removes them.
 * **Add task** opens a text field. This is the only place the notch ever needs the keyboard, and it
   does not take it by itself: your click on the field asks for it, the window becomes focusable
-  only for as long as you are typing, and when you press Enter or Escape (or click away) the
-  previous window gets the focus back. Typing and Ctrl+V work; **IME composition (Chinese, Japanese,
+  only for as long as you are typing. When you press Enter or Escape the window you were in gets the
+  focus back; if you click another window instead, the field closes and that window keeps the focus. Typing and Ctrl+V work; **IME composition (Chinese, Japanese,
   Korean) is not supported** in this field. Nothing hooks the keyboard; the notch only sees keys
   while the field is open and the window has the focus.
 * While running, the pill shows the minutes left. When a phase ends you get a banner (with a
   **Start** button if the next phase does not start by itself) and the system chime
   (`sound = false` silences it). Never while a fullscreen app is in front: it is announced when you
   come back.
-* The timer follows the **wall clock**: it keeps its time across a restart and across sleep (a
-  session that ran out while the lid was shut is finished when it opens, and nothing is credited for
-  time nobody saw).
+* The timer follows the **wall clock**. A session that runs out while the PC sleeps is finished, and
+  credited to its task, when the PC wakes. One that runs out while the app is *closed* comes back
+  stopped at the start of its phase with nothing credited (the notch cannot know you were working);
+  one still running when the app restarts carries on.
 
 ### What is stored
 
@@ -110,5 +111,5 @@ window uses, and that a task survives to `pomodoro.json`.
 **Not verified:** fetching a real `https://` feed (CI has no calendar to point at; the WinHTTP client
 is exercised only for its failure path), the first-time look on your monitor, `SetForegroundWindow`
 behaviour on your system when you click *Add task* (Windows can refuse to move the focus to a
-window; if it does, keystrokes do not reach the field and clicking anywhere else closes it), and any
+window; if it does, keystrokes do not reach the field and clicking another window closes it), and any
 feed produced by an application whose quirks the RFC does not cover.

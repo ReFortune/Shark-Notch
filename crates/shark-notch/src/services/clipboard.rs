@@ -485,9 +485,11 @@ pub fn put_dib(owner: HWND, w: u32, h: u32, bgra_premultiplied: &[u8]) -> bool {
     }
 }
 
-/// Put text on the clipboard flagged "exclude from monitoring", as a password manager does: the
-/// clipboard history and Windows' own clipboard history and sync ignore it. (The pairing token goes
-/// this way; the self-test also uses it to check the service really ignores such text.)
+/// Put text on the clipboard flagged as not to be recorded, as a password manager does: this app's
+/// history ignores it, and the three formats Microsoft documents for the purpose ask Windows' own
+/// clipboard history and cloud sync to leave it out too (`ExcludeClipboardContentFromMonitorProcessing`,
+/// and the DWORDs `CanIncludeInClipboardHistory` and `CanUploadToCloudClipboard` set to 0). The
+/// pairing token goes this way; the self-test also uses it to check the service ignores such text.
 pub fn put_excluded_text(owner: HWND, text: &str) -> bool {
     let wt = wide(text);
     let bytes: Vec<u8> = wt.iter().flat_map(|u| u.to_le_bytes()).collect();
@@ -495,10 +497,13 @@ pub fn put_excluded_text(owner: HWND, text: &str) -> bool {
         if !open_with_retry(owner) {
             return false;
         }
-        let fmt = RegisterClipboardFormatW(w!("ExcludeClipboardContentFromMonitorProcessing"));
+        let f = Formats::register();
+        let cloud = RegisterClipboardFormatW(w!("CanUploadToCloudClipboard"));
         let ok = EmptyClipboard().is_ok()
             && set_bytes(u32::from(CF_UNICODETEXT.0), &bytes)
-            && set_bytes(fmt, &[1, 0, 0, 0]);
+            && set_bytes(f.exclude, &[1, 0, 0, 0])
+            && set_bytes(f.history_ok, &[0, 0, 0, 0])
+            && set_bytes(cloud, &[0, 0, 0, 0]);
         let _ = CloseClipboard();
         ok
     }

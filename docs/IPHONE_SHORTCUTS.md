@@ -6,8 +6,9 @@ them, and an active Focus puts a small chip on the pill), and a **banner** of yo
 There is no app on the phone: iOS **Shortcuts** does the sending, with plain web requests to a
 small server the PC runs on your own network.
 
-Everything on the notch treats a phone item exactly like a PC item (same events, same pages); they
-carry a small "iPhone" label so you can tell.
+Everything on the notch treats a phone item exactly like a PC item (same events, same pages). Clipboard
+entries say "iPhone" and a phone notification's banner reads "<app> · iPhone"; the tiles on the shelf
+and the rows of the notification list carry no tag.
 
 > **Honest scope.** The server, the request rules and the security checks are tested in CI
 > (including a client that talks to the real listener over loopback and tries the things listed in
@@ -95,14 +96,14 @@ Sheet**, accept *Text* and *URLs*, and use **Shortcut Input** as the value of `t
    header `X-File-Name` whose value is the **Repeat Item**'s **Name**, and **Request Body** *File*
    with the **Repeat Item** as the file.
 
-The file arrives on the **shelf** page, labelled from the iPhone, and you can drag it out like any
-other. Notes:
+The file arrives on the **shelf** page (its tile is like any other, with no iPhone tag) and you can
+drag it out like any other. Notes:
 
 * Send the file itself (*File* body). *Form* (multipart) is not understood.
 * Without a name the PC calls the file `phone-<date>-<time>` and adds an extension if it can tell
   one from the content type. Photos are HEIC unless you add **Convert Image** (to JPEG) first; the
   PC's own Photos app may not open HEIC without an extension from the Microsoft Store.
-* The limit is `max_file_mib` (100 MiB). A bigger file is refused *before* any of it is sent.
+* The limit is `max_file_mib` (100 MiB). A bigger file is refused with `413` before its body is read.
 * Where it goes, how long it stays, and what is never accepted: see [Files](#files).
 
 ## Report the phone's battery
@@ -134,7 +135,7 @@ While it is on, the pill carries a small chip with the Focus name, and the iPhon
 
 ## A banner from your own shortcut
 
-`/notify` shows a banner (with the other notifications, labelled iPhone) from any shortcut: *POST*,
+`/notify` shows a banner ("<app> · iPhone") and adds a row to the notifications list, from any shortcut: *POST*,
 JSON `title` (required), `body` and `app` (both optional). For example at the end of a long
 shortcut, so the PC tells you it finished. **iOS does not hand your phone's notifications to
 Shortcuts, so this cannot mirror them**; it only shows what a shortcut chooses to send.
@@ -174,11 +175,14 @@ A request for a module that is switched off on the PC gets `403` and a message t
 
 * A received file is written to `%LOCALAPPDATA%\SharkNotch\phone-inbox\<time>-<random>\<name>`:
   **a folder per file**, so two files of one name never collide and the sender never overwrites
-  anything. The sender chooses a *name* only: folder parts (`..\`, `C:\`) are cut off, characters
-  Windows rejects, device names (`CON`, `NUL`…) and text-direction tricks are removed.
+  anything. The sender chooses a *name* only: folder parts (`..\`, `C:\`) are cut off, and characters
+  Windows rejects and text-direction tricks are removed; a name that is nothing but a device name
+  (`CON`, `NUL`…) is refused with `400`.
 * The file carries Windows' **"downloaded from the internet" mark** (a `Zone.Identifier` stream), so
   SmartScreen and Office's Protected View look at it before it can do anything, as for a browser
-  download. The notch **never opens or runs** it; the shelf only holds a reference.
+  download. The notch never opens or runs a received file by itself. Clicking its tile on the shelf opens
+  it with the default program, as double-clicking it in Explorer would, and the mark makes SmartScreen
+  or Protected View look at it first.
 * **Programs and scripts are refused** (`415`), by the last extension of the name, whatever case:
   `exe com scr bat cmd msi msp mst ps1 psm1 psd1 ps1xml psc1 vbs vbe vb vbscript js jse wsf wsh ws wsc
   sct hta lnk url reg dll sys ocx drv jar cpl inf scf shb shs appx msix appxbundle msixbundle gadget

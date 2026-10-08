@@ -8,9 +8,10 @@ nobody has been able to test yet.
 ## What works without any setup
 
 * Everything else in the notch.
-* **Banners from your iPhone** (phase 11): a shortcut can send one (`/notify`, see
-  [`IPHONE_SHORTCUTS.md`](IPHONE_SHORTCUTS.md)). They come through Shark Notch's own listener, need no
-  Windows permission at all, and use the same banner and the same page. iOS does not hand your phone's
+* **Banners from your iPhone** (phase 11), once you have switched the iPhone link on (it is off by
+  default; it needs its token and, on first use, a firewall step): a shortcut can send one (`/notify`,
+  see [`IPHONE_SHORTCUTS.md`](IPHONE_SHORTCUTS.md)). They come through Shark Notch's own listener, need
+  no Windows notification permission or package identity, and use the same banner and the same page. iOS does not hand your phone's
   *own* notifications to Shortcuts, so those cannot be mirrored; only what a shortcut chooses to send
   arrives.
 * The page tells you plainly when Windows notifications are unavailable ("Windows notifications
@@ -30,7 +31,8 @@ Notch does neither.)
 
 A sparse package is a manifest-only MSIX package that **points at your existing exe**. The exe is not
 repackaged, copied, moved or modified (apart from the manifest that is already embedded at build
-time, `packaging/shark-notch.exe.manifest`, which does nothing until a package is registered).
+time, `packaging/shark-notch.exe.manifest`; its package link does nothing until a package is
+registered, and it also asks Windows for the segment heap, which has nothing to do with notifications).
 Registering the package makes Windows give the running exe an identity, and the identity declares the
 `userNotificationListener` capability.
 
