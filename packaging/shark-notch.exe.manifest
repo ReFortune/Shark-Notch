@@ -17,6 +17,16 @@
       </requestedPrivileges>
     </security>
   </trustInfo>
+  <!--
+    The segment heap (Windows 10 2004+) as the process heap: it hands free memory back to the system
+    far more readily than the classic heap, which matters for a program that is meant to stay small
+    while GPU objects, WinRT and shell components come and go.
+  -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <heapType xmlns="http://schemas.microsoft.com/SMI/2020/WindowsSettings">SegmentHeap</heapType>
+    </windowsSettings>
+  </application>
   <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
     <application>
       <!-- Windows 10 and 11 -->

@@ -129,6 +129,9 @@ pub struct SelfTest {
     /// stay what they say even when the loop was blocked for a while.
     shift: f64,
     heartbeat: Heartbeat,
+    /// The modules (DLLs) loaded so far, to report which ones each step brought in.
+    modules_seen: std::collections::HashSet<String>,
+    last_act: String,
     next: usize,
     pub finished: bool,
     pub exit_code: i32,
@@ -521,6 +524,33 @@ impl SelfTest {
         self.say(format!("FAIL {why}"));
         self.failures.push(why);
     }
+
+    /// Say which modules (DLLs) were loaded since the previous step: the first use of a feature
+    /// often loads one, and loading from a cold disk is a hitch in its own right. `next` names the
+    /// step about to run; the new modules were brought in while the previous one was running.
+    fn note_new_modules(&mut self, next: &str) {
+        let now = stall::module_names();
+        let new: Vec<&String> = now
+            .iter()
+            .filter(|m| !self.modules_seen.contains(*m))
+            .collect();
+        if !new.is_empty() {
+            let shown: Vec<&str> = new.iter().take(24).map(|m| m.as_str()).collect();
+            let line = format!(
+                "modules loaded while {} was running (before {next}): {}{}",
+                self.last_act,
+                shown.join(", "),
+                if new.len() > shown.len() {
+                    format!(" and {} more", new.len() - shown.len())
+                } else {
+                    String::new()
+                }
+            );
+            self.say(line);
+        }
+        self.modules_seen = now.into_iter().collect();
+        self.last_act = next.to_string();
+    }
 }
 
 /// Read a pixel of the composed desktop (what you would see), as `(r, g, b)`.
@@ -765,6 +795,8 @@ pub fn begin(a: &mut App) {
             cycles_hz / 1000.0,
             now,
         ),
+        modules_seen: stall::module_names().into_iter().collect(),
+        last_act: "start-up".into(),
         next: 0,
         finished: false,
         exit_code: 0,
@@ -833,6 +865,7 @@ pub fn step(a: &mut App, now: f64) {
     if late > 0.05 {
         st.shift += late;
     }
+    st.note_new_modules(&format!("{act:?}"));
     run(a, &mut st, act, now);
     if let Some(&(t, _)) = SCRIPT.get(st.next) {
         a.sched.set(T_SCRIPT, st.start + st.shift + t);

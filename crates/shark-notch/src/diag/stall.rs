@@ -21,13 +21,17 @@ use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows::Win32::System::Diagnostics::Debug::{
     CONTEXT, CONTEXT_CONTROL_AMD64, CONTEXT_FLAGS, CONTEXT_INTEGER_AMD64, GetThreadContext,
 };
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+};
 use windows::Win32::System::Memory::{MEM_IMAGE, MEMORY_BASIC_INFORMATION, VirtualQuery};
 use windows::Win32::System::ProcessStatus::{
     EnumProcessModules, GetModuleBaseNameW, GetModuleInformation, MODULEINFO,
 };
 use windows::Win32::System::Threading::{
-    GetCurrentProcess, OpenThread, ResumeThread, SuspendThread, THREAD_GET_CONTEXT,
-    THREAD_QUERY_INFORMATION, THREAD_SUSPEND_RESUME,
+    GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId, OpenThread, ResumeThread,
+    SuspendThread, THREAD_GET_CONTEXT, THREAD_QUERY_INFORMATION, THREAD_QUERY_LIMITED_INFORMATION,
+    THREAD_SUSPEND_RESUME,
 };
 use windows::Win32::System::WindowsProgramming::QueryThreadCycleTime;
 
@@ -53,6 +57,8 @@ pub struct Sample {
     pub top: String,
     /// The return addresses found on its stack, innermost first, a run of one module folded to one.
     pub calls: Vec<String>,
+    /// At the second look of a stall: what the process's other threads were doing meanwhile.
+    pub others: Option<String>,
 }
 
 impl Sample {
@@ -68,18 +74,24 @@ impl Sample {
             } else {
                 self.calls.join(" <- ")
             }
-        )
+        ) + &self
+            .others
+            .as_ref()
+            .map_or(String::new(), |o| format!(" || meanwhile: {o}"))
     }
 }
 
 /// Watches the thread that created it (the one running the message loop and the frames).
 pub struct Watcher {
     thread: HANDLE,
+    thread_id: u32,
     cycles_per_ms: f64,
     /// The `EndDraw` call being tracked (its entry time), 0 when none.
     since: u64,
     /// Samples taken for it.
     taken: usize,
+    /// Every thread's CPU cycles at the first look of the stall being tracked, and when.
+    baseline: Option<(f64, Vec<(u32, u64)>)>,
 }
 
 impl Watcher {
@@ -95,9 +107,11 @@ impl Watcher {
         .ok()?;
         Some(Watcher {
             thread,
+            thread_id,
             cycles_per_ms: cycles_per_ms.max(1.0),
             since: 0,
             taken: 0,
+            baseline: None,
         })
     }
 
@@ -111,9 +125,11 @@ impl Watcher {
         if since != self.since {
             self.since = since;
             self.taken = 0;
+            self.baseline = None;
         }
         let inside_ms = (clock::now() * 1e6 - since as f64) / 1e3;
-        let due = *LOOK_AT_MS.get(self.taken)?;
+        let look = self.taken;
+        let due = *LOOK_AT_MS.get(look)?;
         if inside_ms < due {
             return None;
         }
@@ -126,28 +142,150 @@ impl Watcher {
             let _ = QueryThreadCycleTime(self.thread, &mut cycles);
         }
         let mods = modules();
-        let top = describe(&mods, raw.rip);
-        let mut calls: Vec<(String, String)> = Vec::new();
-        for &word in &raw.words {
-            let a = word as usize;
-            if !(0x10000..=0x7fff_ffff_ffff).contains(&a) {
-                continue;
+        let (top, calls) = analyse(&mods, &raw);
+        // The first look notes what every thread has used so far; the second says who has been
+        // working since (a software renderer's worker threads, say) and where they are.
+        let others = match look {
+            0 => {
+                self.baseline = Some((clock::now(), thread_cycles()));
+                None
             }
-            if let Some(c) = describe_call(&mods, a) {
-                calls.push(c);
-                if calls.len() >= MAX_CALLS {
-                    break;
-                }
-            }
-        }
+            1 => self
+                .baseline
+                .take()
+                .map(|(t0, base)| self.others(&mods, t0, &base)),
+            _ => None,
+        };
         Some(Sample {
             at: clock::now(),
             inside_ms,
             ran_ms: cycles.saturating_sub(entered_with) as f64 / self.cycles_per_ms,
-            top: top.map_or_else(|| format!("{:#x}", raw.rip), |(_, label)| label),
-            calls: fold(calls),
+            top,
+            calls,
+            others,
         })
     }
+
+    /// What the other threads did since `t0` (their cycle counts were `base` then): the busiest ones
+    /// and where they stand.
+    fn others(&self, mods: &[Module], t0: f64, base: &[(u32, u64)]) -> String {
+        let elapsed_ms = (clock::now() - t0) * 1e3;
+        let mine = unsafe { GetCurrentThreadId() };
+        let now = thread_cycles();
+        let mut used: Vec<(u32, f64)> = now
+            .iter()
+            .filter(|(tid, _)| *tid != mine)
+            .map(|&(tid, c)| {
+                let before = base.iter().find(|(t, _)| *t == tid).map_or(c, |&(_, b)| b);
+                (tid, c.saturating_sub(before) as f64 / self.cycles_per_ms)
+            })
+            .collect();
+        used.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let total: f64 = used.iter().map(|u| u.1).sum();
+        let mut out = format!(
+            "in the {elapsed_ms:.0} ms since the first look all threads together used {total:.0} ms of CPU (the render thread {:.1})",
+            used.iter()
+                .find(|u| u.0 == self.thread_id)
+                .map_or(0.0, |u| u.1)
+        );
+        for &(tid, ms) in used
+            .iter()
+            .filter(|u| u.0 != self.thread_id && u.1 >= 5.0)
+            .take(2)
+        {
+            let stack = open_for_looking(tid).and_then(|h| {
+                let raw = capture(h);
+                unsafe {
+                    let _ = CloseHandle(h);
+                }
+                raw
+            });
+            match stack {
+                Some(raw) => {
+                    let (top, mut calls) = analyse(mods, &raw);
+                    calls.truncate(8);
+                    out += &format!(
+                        "; thread {tid} used {ms:.0} ms and now is at {top}, called from {}",
+                        calls.join(" <- ")
+                    );
+                }
+                None => out += &format!("; thread {tid} used {ms:.0} ms"),
+            }
+        }
+        out
+    }
+}
+
+/// Open any thread of this process far enough to stop it and read its registers.
+fn open_for_looking(tid: u32) -> Option<HANDLE> {
+    unsafe {
+        OpenThread(
+            THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME | THREAD_QUERY_INFORMATION,
+            false,
+            tid,
+        )
+    }
+    .ok()
+}
+
+/// The CPU cycles every thread of this process has used so far, by thread id.
+fn thread_cycles() -> Vec<(u32, u64)> {
+    let mut out = Vec::new();
+    unsafe {
+        let pid = GetCurrentProcessId();
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) else {
+            return out;
+        };
+        let mut e = THREADENTRY32 {
+            dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+            ..Default::default()
+        };
+        if Thread32First(snap, &mut e).is_ok() {
+            loop {
+                if e.th32OwnerProcessID == pid
+                    && let Ok(h) =
+                        OpenThread(THREAD_QUERY_LIMITED_INFORMATION, false, e.th32ThreadID)
+                {
+                    let mut c = 0u64;
+                    if QueryThreadCycleTime(h, &mut c).is_ok() {
+                        out.push((e.th32ThreadID, c));
+                    }
+                    let _ = CloseHandle(h);
+                }
+                if Thread32Next(snap, &mut e).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snap);
+    }
+    out
+}
+
+/// Where a stopped thread was executing, and the return addresses on its stack (innermost first).
+fn analyse(mods: &[Module], raw: &Raw) -> (String, Vec<String>) {
+    // Where it is executing: a module, or code generated at run time, or just an address.
+    let top = describe(mods, raw.rip)
+        .map(|(_, label)| label)
+        .or_else(|| match executable(raw.rip) {
+            Some((false, base)) => Some(format!("generated code@{base:#x}+{:#x}", raw.rip - base)),
+            _ => None,
+        })
+        .unwrap_or_else(|| format!("{:#x}", raw.rip));
+    let mut calls: Vec<(String, String)> = Vec::new();
+    for &word in &raw.words {
+        let a = word as usize;
+        if !(0x10000..=0x7fff_ffff_ffff).contains(&a) {
+            continue;
+        }
+        if let Some(c) = describe_call(mods, a) {
+            calls.push(c);
+            if calls.len() >= MAX_CALLS {
+                break;
+            }
+        }
+    }
+    (top, fold(calls))
 }
 
 impl Drop for Watcher {
@@ -208,6 +346,11 @@ fn capture(thread: HANDLE) -> Option<Raw> {
 #[cfg(not(target_arch = "x86_64"))]
 fn capture(_thread: HANDLE) -> Option<Raw> {
     None
+}
+
+/// The names of the modules loaded into this process, in load order.
+pub fn module_names() -> Vec<String> {
+    modules().into_iter().map(|m| m.name).collect()
 }
 
 /// A loaded module: where it is and what it is called.

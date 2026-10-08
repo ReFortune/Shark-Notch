@@ -45,6 +45,12 @@ pub struct GpuStack {
 /// Direct2D resources untouched for this long are freed when an animation ends (`trim`).
 const CACHE_KEEP_MS: u32 = 60_000;
 
+/// How much texture memory Direct2D may accumulate (clip layers, glyph pages, image copies) before it
+/// purges its caches. The notch draws a few small shapes and some text, so the budget is modest; but
+/// one that is too tight makes Direct2D throw its caches away and rebuild them while a page is
+/// open (it was 8 MiB; the default is 64).
+const TEXTURE_BUDGET: u64 = 32 * 1024 * 1024;
+
 const LEVELS: [D3D_FEATURE_LEVEL; 4] = [
     D3D_FEATURE_LEVEL_11_1,
     D3D_FEATURE_LEVEL_11_0,
@@ -147,8 +153,7 @@ impl GpuStack {
             let d2d_factory: ID2D1Factory1 =
                 D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, Some(&opts))?;
             let d2d_device = d2d_factory.CreateDevice(&dxgi_device)?;
-            // The notch draws a few small shapes and some text; a big texture cache is wasted memory.
-            d2d_device.SetMaximumTextureMemory(8 * 1024 * 1024);
+            d2d_device.SetMaximumTextureMemory(TEXTURE_BUDGET);
             let dc = d2d_device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
             // ClearType needs an opaque background; the notch is composited with per-pixel alpha.
             dc.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);

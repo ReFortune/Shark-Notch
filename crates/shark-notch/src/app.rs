@@ -660,9 +660,19 @@ impl App {
         self.stage = None;
         sys::trim_working_set();
         let m = sys::proc_metrics();
+        // Committed memory is what stays after the working set is trimmed; the heap line says how
+        // much of it is data in use and how much is free memory the heap keeps for itself.
+        let heap = sys::heap_info(false).map_or(String::new(), |h| {
+            format!(
+                "; the default heap holds {:.1} MiB in use of {:.1} MiB committed",
+                sys::mib(h.allocated),
+                sys::mib(h.committed)
+            )
+        });
         info!(
-            "GPU stack released; private working set {:.1} MiB",
-            sys::mib(m.private_ws)
+            "GPU stack released; private working set {:.1} MiB, commit {:.1} MiB{heap}",
+            sys::mib(m.private_ws),
+            sys::mib(m.private_commit)
         );
     }
 
@@ -802,7 +812,10 @@ impl App {
             {
                 self.slow_frames_logged += 1;
                 warn!(
-                    "slow frame {total_ms:.1} ms: update+compose {:.1}, render {:.1} (set-up {:.1}, display list {:.1}, EndDraw {:.1} ms during which this thread executed {:.1} Mcycles; built {} text layout(s) in {:.1} ms, {} geometries in {:.1} ms, uploaded {} image(s) in {:.1} ms), present {:.1}",
+                    "slow frame {total_ms:.1} ms (frame {} of its burst, panel {:.0}x{:.0} DIP): update+compose {:.1}, render {:.1} (set-up {:.1}, display list {:.1}, EndDraw {:.1} ms during which this thread executed {:.1} Mcycles; built {} text layout(s) in {:.1} ms, {} geometries in {:.1} ms, uploaded {} image(s) in {:.1} ms), present {:.1}",
+                    self.recorder.len(),
+                    frame.shape.w,
+                    frame.shape.h,
                     ((t_composed - t_start) * 1000.0),
                     t.render_ms,
                     t.setup_ms,
