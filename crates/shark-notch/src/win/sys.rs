@@ -10,6 +10,9 @@ use windows::Win32::Graphics::Dwm::DwmGetColorizationColor;
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
 };
+use windows::Win32::System::Memory::{
+    GetProcessHeap, HEAP_FLAGS, HEAP_SUMMARY, HeapCompact, HeapSummary,
+};
 use windows::Win32::System::ProcessStatus::{
     GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX2,
 };
@@ -214,6 +217,35 @@ pub fn proc_metrics() -> ProcMetrics {
         }
     }
     m
+}
+
+/// The default process heap, which Rust's allocator uses: bytes handed out and bytes the heap holds
+/// committed (the difference is free memory it keeps for reuse).
+#[derive(Clone, Copy, Debug)]
+pub struct HeapInfo {
+    pub allocated: u64,
+    pub committed: u64,
+}
+
+/// What the default heap holds. With `compact`, it is first asked to give free pages back.
+pub fn heap_info(compact: bool) -> Option<HeapInfo> {
+    unsafe {
+        let heap = GetProcessHeap().ok()?;
+        if compact {
+            let _ = HeapCompact(heap, HEAP_FLAGS(0));
+        }
+        let mut s = HEAP_SUMMARY {
+            cb: std::mem::size_of::<HEAP_SUMMARY>() as u32,
+            cbAllocated: 0,
+            cbCommitted: 0,
+            cbReserved: 0,
+            cbMaxReserve: 0,
+        };
+        HeapSummary(heap, 0, &mut s).as_bool().then_some(HeapInfo {
+            allocated: s.cbAllocated as u64,
+            committed: s.cbCommitted as u64,
+        })
+    }
 }
 
 /// CPU cycles the calling thread has used so far (`QueryThreadCycleTime`).

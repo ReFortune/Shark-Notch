@@ -802,12 +802,13 @@ impl App {
             {
                 self.slow_frames_logged += 1;
                 warn!(
-                    "slow frame {total_ms:.1} ms: update+compose {:.1}, render {:.1} (set-up {:.1}, display list {:.1}, EndDraw {:.1}; built {} text layout(s) in {:.1} ms, {} geometries in {:.1} ms, uploaded {} image(s) in {:.1} ms), present {:.1}",
+                    "slow frame {total_ms:.1} ms: update+compose {:.1}, render {:.1} (set-up {:.1}, display list {:.1}, EndDraw {:.1} ms during which this thread executed {:.1} Mcycles; built {} text layout(s) in {:.1} ms, {} geometries in {:.1} ms, uploaded {} image(s) in {:.1} ms), present {:.1}",
                     ((t_composed - t_start) * 1000.0),
                     t.render_ms,
                     t.setup_ms,
                     t.commands_ms,
                     t.end_ms,
+                    t.end_cycles as f64 / 1e6,
                     t.built.layouts,
                     t.built.layout_ms,
                     t.built.geometries,

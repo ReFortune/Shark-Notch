@@ -10,6 +10,7 @@
 //! * (optionally) that the notch is actually on screen: a GDI read of the composed desktop.
 
 mod phone_probe;
+mod stall;
 
 use std::fmt::Write as _;
 
@@ -51,18 +52,27 @@ static HEARTBEAT_CYCLES: AtomicU64 = AtomicU64::new(0);
 /// A watchdog thread that sleeps in short steps and notes every time it woke up much later than it
 /// asked: if *no* thread of this process ran for a while, the operating system (or the VM) stalled,
 /// and a hitch in the frame report is not the app's fault. Reported at the end of the self-test.
+///
+/// It also keeps an eye on the render thread: when a frame sits inside Direct2D's `EndDraw` for far
+/// too long it looks at where the thread stands (see [`stall`]).
 struct Heartbeat {
     stalls: Arc<Mutex<Vec<(f64, f64)>>>,
+    /// What the render thread was doing during frames that took too long: one line per look.
+    looks: Arc<Mutex<Vec<String>>>,
 }
 
 impl Heartbeat {
-    fn start() -> Heartbeat {
+    /// `render_thread` is the thread that draws the frames (the caller's); `cycles_per_ms` is its
+    /// clock, to turn a cycle count into time; `start` is the script's start, for the times printed.
+    fn start(render_thread: u32, cycles_per_ms: f64, start: f64) -> Heartbeat {
         let stalls = Arc::new(Mutex::new(Vec::new()));
-        let s = stalls.clone();
+        let looks = Arc::new(Mutex::new(Vec::new()));
+        let (s, l) = (stalls.clone(), looks.clone());
         let _ = std::thread::Builder::new()
             .name("selftest-heartbeat".into())
             .stack_size(128 * 1024)
             .spawn(move || {
+                let mut watcher = stall::Watcher::new(render_thread, cycles_per_ms);
                 loop {
                     let t0 = clock::now();
                     std::thread::sleep(Duration::from_millis(15));
@@ -72,10 +82,26 @@ impl Heartbeat {
                     {
                         v.push((t0, dt));
                     }
+                    if let Some(w) = watcher.as_mut()
+                        && let Some(sample) = w.poll()
+                    {
+                        let line = sample.line(start);
+                        crate::warn!("render thread stuck in EndDraw: {line}");
+                        if let Ok(mut v) = l.lock()
+                            && v.len() < 80
+                        {
+                            v.push(line);
+                        }
+                    }
                     HEARTBEAT_CYCLES.store(sys::thread_cycles(), Ordering::Relaxed);
                 }
             });
-        Heartbeat { stalls }
+        Heartbeat { stalls, looks }
+    }
+
+    /// What the render thread was doing whenever a frame sat inside `EndDraw` for too long.
+    fn looks(&self) -> Vec<String> {
+        self.looks.lock().map(|g| g.clone()).unwrap_or_default()
     }
 
     fn report(&self, start: f64) -> String {
@@ -725,6 +751,8 @@ fn simulate_drop(a: &App, data: &windows::Win32::System::Com::IDataObject) -> Op
 
 pub fn begin(a: &mut App) {
     let now = clock::now();
+    // How fast one core counts cycles: turns cycle counts into time, here and in the stall watcher.
+    let cycles_hz = sys::cycles_per_sec();
     if a.opts.light_probe {
         a.cfg.appearance.theme = notch_core::theme::ThemeMode::Light;
         a.refresh_theme();
@@ -732,7 +760,11 @@ pub fn begin(a: &mut App) {
     let mut st = SelfTest {
         start: now,
         shift: 0.0,
-        heartbeat: Heartbeat::start(),
+        heartbeat: Heartbeat::start(
+            unsafe { windows::Win32::System::Threading::GetCurrentThreadId() },
+            cycles_hz / 1000.0,
+            now,
+        ),
         next: 0,
         finished: false,
         exit_code: 0,
@@ -759,7 +791,7 @@ pub fn begin(a: &mut App) {
         phone_mark: PhoneMark::default(),
         phone_idle: None,
         phone_blocker: None,
-        cycles_hz: sys::cycles_per_sec(),
+        cycles_hz,
         warm_idle: None,
         released_idle: None,
         released_commit: 0.0,
@@ -770,6 +802,10 @@ pub fn begin(a: &mut App) {
         std::process::id(),
         a.opts.light_probe,
         a.cfg.general.exclude_from_capture && !a.opts.no_exclude
+    ));
+    st.say(format!(
+        "clock: one busy core counts {:.2} Mcycles per ms",
+        cycles_hz / 1e9
     ));
     // The report lists every burst of the run, not only the last few.
     a.recorder.set_max_reports(4096);
@@ -2376,6 +2412,7 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
         }
         Act::FinalMemory => {
             let m = sys::proc_metrics();
+            let heap = sys::heap_info(false);
             let (ws, commit) = (sys::mib(m.private_ws), sys::mib(m.private_commit));
             st.final_memory = Some((ws, commit));
             st.say(format!(
@@ -2384,6 +2421,19 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
                 st.released_commit,
                 sys::mib(m.peak_working_set)
             ));
+            // Is the commit in use or just kept? Ask the allocator's heap what it holds, then ask
+            // it to give back what is free and measure again.
+            let compacted = sys::heap_info(true);
+            let after = sys::proc_metrics();
+            if let (Some(h), Some(c)) = (heap, compacted) {
+                st.say(format!(
+                    "memory: the default heap (Rust's allocator) has {:.1} MiB in use of {:.1} MiB committed; after asking it to give free pages back: {:.1} MiB committed, and the process commit is {:.1} MiB",
+                    sys::mib(h.allocated),
+                    sys::mib(h.committed),
+                    sys::mib(c.committed),
+                    sys::mib(after.private_commit)
+                ));
+            }
         }
         Act::Report => finish(a, st),
     }
@@ -2438,6 +2488,18 @@ fn finish(a: &mut App, st: &mut SelfTest) {
     st.say(report.trim_end().to_string());
     let hb = st.heartbeat.report(st.start);
     st.say(hb);
+    let looks = st.heartbeat.looks();
+    if looks.is_empty() {
+        st.say("no frame sat inside Direct2D's EndDraw for more than 40 ms".to_string());
+    } else {
+        st.say(format!(
+            "{} look(s) at the render thread while a frame sat inside Direct2D's EndDraw for more than 40 ms (where it was executing, then the calls on its stack, innermost first):",
+            looks.len()
+        ));
+        for l in looks {
+            st.say(format!("  {l}"));
+        }
+    }
     st.say(format!(
         "result: {}",
         if st.failures.is_empty() {

@@ -10,6 +10,7 @@
 
 use std::mem::ManuallyDrop;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use notch_core::draw::DrawList;
 use notch_core::image::ImageCache;
@@ -43,9 +44,16 @@ use windows::core::{Error, Interface, Result};
 use super::render::{FrameStats, ImageStore, Renderer};
 use super::stack::GpuStack;
 use crate::win::clock;
+use crate::win::sys;
 use crate::win::window::{self, WndProc};
 
 pub const STAGE_CLASS: &str = "SharkNotch.Stage";
+
+/// Set while the render thread is inside `EndDraw`: when it went in (microseconds on the [`clock`]
+/// timeline, never 0) and the thread's CPU cycles at that moment; 0 / unused otherwise. The
+/// self-test's watchdog reads them to look at a frame that is taking far too long; nothing else does.
+pub static END_DRAW_SINCE_US: AtomicU64 = AtomicU64::new(0);
+pub static END_DRAW_CYCLES: AtomicU64 = AtomicU64::new(0);
 
 /// `D2DERR_RECREATE_TARGET`.
 const D2DERR_RECREATE_TARGET: i32 = 0x8899000C_u32 as i32;
@@ -71,8 +79,21 @@ pub struct DrawTimes {
     pub setup_ms: f32,
     pub commands_ms: f32,
     pub end_ms: f32,
+    /// CPU cycles the render thread itself executed inside `EndDraw`. Far below what `end_ms` would
+    /// cost at full speed means the thread was waiting (for the device, the compositor, the disk),
+    /// not computing.
+    pub end_cycles: u64,
     /// What the frame had to build.
     pub built: FrameStats,
+}
+
+/// Where the time of one `render` went.
+#[derive(Clone, Copy, Debug, Default)]
+struct RenderSplit {
+    setup_ms: f32,
+    commands_ms: f32,
+    end_ms: f32,
+    end_cycles: u64,
 }
 
 pub struct Stage {
@@ -209,7 +230,7 @@ impl Stage {
     /// Draw `list` into the back buffer and present it (vsync-locked). Returns where the time went.
     pub fn draw(&mut self, list: &DrawList) -> Result<DrawTimes> {
         let t0 = clock::now();
-        let (setup_ms, commands_ms, end_ms) = self.render(list)?;
+        let split = self.render(list)?;
         let t1 = clock::now();
         // The very first frame is presented immediately so the window never shows undefined pixels.
         let sync = if self.presented { 1 } else { 0 };
@@ -221,9 +242,10 @@ impl Stage {
         Ok(DrawTimes {
             render_ms: ((t1 - t0) * 1000.0) as f32,
             present_ms: ((t2 - t1) * 1000.0) as f32,
-            setup_ms,
-            commands_ms,
-            end_ms,
+            setup_ms: split.setup_ms,
+            commands_ms: split.commands_ms,
+            end_ms: split.end_ms,
+            end_cycles: split.end_cycles,
             built,
         })
     }
@@ -235,8 +257,8 @@ impl Stage {
         self.render(list).map(|_| ())
     }
 
-    /// Draw into the back buffer. Returns `(set-up, display list, EndDraw)` in milliseconds.
-    fn render(&mut self, list: &DrawList) -> Result<(f32, f32, f32)> {
+    /// Draw into the back buffer. Returns where the time went.
+    fn render(&mut self, list: &DrawList) -> Result<RenderSplit> {
         unsafe {
             let t0 = clock::now();
             let surface: IDXGISurface = self.swap.GetBuffer(0)?;
@@ -263,17 +285,25 @@ impl Stage {
             let t1 = clock::now();
             let drawn = self.renderer.draw(&self.gpu, list, &mut self.images);
             let t2 = clock::now();
+            // EndDraw is where Direct2D hands the frame to the device, and where a software
+            // renderer does the work: note when we went in, so a watchdog can look at a long one.
+            let c0 = sys::thread_cycles();
+            END_DRAW_CYCLES.store(c0, Ordering::Relaxed);
+            END_DRAW_SINCE_US.store(((t2 * 1e6) as u64).max(1), Ordering::Relaxed);
             // EndDraw must run even if drawing failed, or the context stays in a draw state.
             let ended = dc.EndDraw(None, None);
+            END_DRAW_SINCE_US.store(0, Ordering::Relaxed);
+            let end_cycles = sys::thread_cycles().saturating_sub(c0);
             dc.SetTarget(None);
             let t3 = clock::now();
             drawn?;
             ended?;
-            Ok((
-                ((t1 - t0) * 1000.0) as f32,
-                ((t2 - t1) * 1000.0) as f32,
-                ((t3 - t2) * 1000.0) as f32,
-            ))
+            Ok(RenderSplit {
+                setup_ms: ((t1 - t0) * 1000.0) as f32,
+                commands_ms: ((t2 - t1) * 1000.0) as f32,
+                end_ms: ((t3 - t2) * 1000.0) as f32,
+                end_cycles,
+            })
         }
     }
 
