@@ -436,8 +436,10 @@ mod tests {
     }
 
     #[test]
-    fn this_process_exports_are_found_by_address() {
-        // kernel32's own exports: GetCurrentProcessId's address resolves back to its name.
+    fn an_exported_function_is_named_from_its_address() {
+        // kernel32 forwards GetCurrentProcessId to KERNELBASE, so GetProcAddress hands back an
+        // address in whichever module really holds it; that module must be in the snapshot, and the
+        // address is the very start of an exported function.
         use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
         use windows::core::{s, w};
         let mods = modules();
@@ -445,10 +447,9 @@ mod tests {
         let k = unsafe { GetModuleHandleW(w!("kernel32.dll")) }.expect("kernel32 is loaded");
         let f = unsafe { GetProcAddress(k, s!("GetCurrentProcessId")) }.expect("exported");
         let (module, label) = describe(&mods, f as usize).expect("inside a loaded module");
-        assert!(module.eq_ignore_ascii_case("kernel32.dll"), "{module}");
         assert!(
-            label.contains("GetCurrentProcessId") || label.contains("kernel32"),
-            "{label}"
+            label.starts_with(&module) && label.contains('!') && label.ends_with("+0x0"),
+            "{module}: {label}"
         );
     }
 
