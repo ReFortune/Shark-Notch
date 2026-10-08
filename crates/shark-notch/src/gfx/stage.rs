@@ -40,7 +40,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 use windows::core::{Error, Interface, Result};
 
-use super::render::{ImageStore, Renderer};
+use super::render::{FrameStats, ImageStore, Renderer};
 use super::stack::GpuStack;
 use crate::win::clock;
 use crate::win::window::{self, WndProc};
@@ -65,6 +65,14 @@ pub struct DrawTimes {
     pub render_ms: f32,
     /// The `Present` call (can block briefly on vsync / the frame queue).
     pub present_ms: f32,
+    /// Of `render_ms`: getting the target ready and `BeginDraw`; issuing the display list's drawing
+    /// calls (including building whatever was not cached); and `EndDraw`, where Direct2D hands the
+    /// work to the device (on a software renderer, where it is done).
+    pub setup_ms: f32,
+    pub commands_ms: f32,
+    pub end_ms: f32,
+    /// What the frame had to build.
+    pub built: FrameStats,
 }
 
 pub struct Stage {
@@ -201,16 +209,22 @@ impl Stage {
     /// Draw `list` into the back buffer and present it (vsync-locked). Returns where the time went.
     pub fn draw(&mut self, list: &DrawList) -> Result<DrawTimes> {
         let t0 = clock::now();
-        self.render(list)?;
+        let (setup_ms, commands_ms, end_ms) = self.render(list)?;
         let t1 = clock::now();
         // The very first frame is presented immediately so the window never shows undefined pixels.
         let sync = if self.presented { 1 } else { 0 };
         unsafe { self.swap.Present(sync, DXGI_PRESENT(0)).ok()? };
         self.presented = true;
         let t2 = clock::now();
+        let mut built = self.renderer.frame_stats();
+        (built.uploads, built.upload_ms) = self.images.take_upload_stats();
         Ok(DrawTimes {
             render_ms: ((t1 - t0) * 1000.0) as f32,
             present_ms: ((t2 - t1) * 1000.0) as f32,
+            setup_ms,
+            commands_ms,
+            end_ms,
+            built,
         })
     }
 
@@ -218,11 +232,13 @@ impl Stage {
     /// the driver's first-use paths) while the window is still hidden, so the first visible
     /// animation does not pay for them.
     pub fn render_only(&mut self, list: &DrawList) -> Result<()> {
-        self.render(list)
+        self.render(list).map(|_| ())
     }
 
-    fn render(&mut self, list: &DrawList) -> Result<()> {
+    /// Draw into the back buffer. Returns `(set-up, display list, EndDraw)` in milliseconds.
+    fn render(&mut self, list: &DrawList) -> Result<(f32, f32, f32)> {
         unsafe {
+            let t0 = clock::now();
             let surface: IDXGISurface = self.swap.GetBuffer(0)?;
             let props = D2D1_BITMAP_PROPERTIES1 {
                 pixelFormat: D2D1_PIXEL_FORMAT {
@@ -244,14 +260,21 @@ impl Stage {
                 b: 0.0,
                 a: 0.0,
             }));
+            let t1 = clock::now();
             let drawn = self.renderer.draw(&self.gpu, list, &mut self.images);
+            let t2 = clock::now();
             // EndDraw must run even if drawing failed, or the context stays in a draw state.
             let ended = dc.EndDraw(None, None);
             dc.SetTarget(None);
+            let t3 = clock::now();
             drawn?;
             ended?;
+            Ok((
+                ((t1 - t0) * 1000.0) as f32,
+                ((t2 - t1) * 1000.0) as f32,
+                ((t3 - t2) * 1000.0) as f32,
+            ))
         }
-        Ok(())
     }
 
     /// Show the window (never activating it) at the given physical rectangle, above other topmost windows.

@@ -98,6 +98,10 @@ impl Heartbeat {
 
 pub struct SelfTest {
     start: f64,
+    /// Seconds the script has been pushed back by stalls: a step that fires late moves every later
+    /// step by as much, so the gaps the script asks for (wait a second for a save, a quiet 2.6 s)
+    /// stay what they say even when the loop was blocked for a while.
+    shift: f64,
     heartbeat: Heartbeat,
     next: usize,
     pub finished: bool,
@@ -727,6 +731,7 @@ pub fn begin(a: &mut App) {
     }
     let mut st = SelfTest {
         start: now,
+        shift: 0.0,
         heartbeat: Heartbeat::start(),
         next: 0,
         finished: false,
@@ -782,16 +787,19 @@ pub fn step(a: &mut App, now: f64) {
     }
     let (due, act) = SCRIPT[st.next];
     st.next += 1;
-    let late = now - (st.start + due);
+    let late = now - (st.start + st.shift + due);
     if late > 0.1 {
         st.say(format!(
-            "timer for {act:?} fired {:.0} ms late (the loop was busy, blocked or the process stalled)",
+            "timer for {act:?} fired {:.0} ms late (the loop was busy, blocked or the process stalled); the rest of the script moves back by as much",
             late * 1000.0
         ));
     }
+    if late > 0.05 {
+        st.shift += late;
+    }
     run(a, &mut st, act, now);
     if let Some(&(t, _)) = SCRIPT.get(st.next) {
-        a.sched.set(T_SCRIPT, st.start + t);
+        a.sched.set(T_SCRIPT, st.start + st.shift + t);
     }
     a.selftest = Some(st);
 }
@@ -1659,7 +1667,20 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
         }
         Act::PomoSaveCheck => {
             let path = paths::data_dir().join("pomodoro.json");
-            match std::fs::read_to_string(&path) {
+            // The store writes a moment after the last change (400 ms, on its own thread): wait for
+            // that instead of assuming the loop was on time (a stalled one made this check run
+            // three milliseconds after the change, in a CI run that was otherwise fine).
+            let until = clock::now() + 2.0;
+            let read = loop {
+                let r = std::fs::read_to_string(&path);
+                if r.as_ref().is_ok_and(|j| j.contains("Ship the selftest"))
+                    || clock::now() >= until
+                {
+                    break r;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            };
+            match read {
                 Ok(json) if json.contains("Ship the selftest") => st.say(format!(
                     "pomodoro: the task list was saved to pomodoro.json ({} bytes) a moment after the change",
                     json.len()

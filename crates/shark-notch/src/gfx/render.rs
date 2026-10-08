@@ -6,6 +6,7 @@
 //! * text is DirectWrite, grayscale AA, vertically centred in its rect, ellipsis-trimmed;
 //! * icons are the shared vector paths, geometry cached per icon.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::hash::{Hash, Hasher};
@@ -48,6 +49,7 @@ use windows::core::{BOOL, Interface, PCWSTR, Result};
 use windows_numerics::{Matrix3x2, Vector2};
 
 use super::stack::GpuStack;
+use crate::win::clock;
 use crate::win::util::wide;
 
 /// Text layouts kept between frames (see `Renderer::text_layout`). A page has tens of strings, all
@@ -150,6 +152,19 @@ fn v2(p: Vec2) -> Vector2 {
 
 /// GPU copies of decoded images, uploaded on first use from the shared CPU cache.
 ///
+/// What the executor had to build in a frame because it was not cached, and how long that took:
+/// text layouts, path geometry and image uploads. The frame-time report prints it for a slow frame,
+/// so a hitch says whether the time went into building things or into `EndDraw`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FrameStats {
+    pub layouts: u32,
+    pub layout_ms: f32,
+    pub geometries: u32,
+    pub geometry_ms: f32,
+    pub uploads: u32,
+    pub upload_ms: f32,
+}
+
 /// The cache (owned by the app, filled by worker threads) is the source of truth; this store only
 /// holds Direct2D bitmaps for the images that were actually drawn, and forgets the ones the cache
 /// no longer has. Releasing the GPU stack drops the whole store; the next draw re-uploads.
@@ -157,6 +172,9 @@ pub struct ImageStore {
     cache: Arc<ImageCache>,
     bitmaps: HashMap<u64, ID2D1Bitmap1>,
     seen_generation: u64,
+    /// Uploads since the last [`ImageStore::take_upload_stats`]: how many and how long.
+    uploads: u32,
+    upload_ms: f32,
 }
 
 impl ImageStore {
@@ -165,7 +183,17 @@ impl ImageStore {
             seen_generation: cache.generation(),
             cache,
             bitmaps: HashMap::new(),
+            uploads: 0,
+            upload_ms: 0.0,
         }
+    }
+
+    /// `(count, milliseconds)` of the uploads since the last call.
+    pub fn take_upload_stats(&mut self) -> (u32, f32) {
+        let r = (self.uploads, self.upload_ms);
+        self.uploads = 0;
+        self.upload_ms = 0.0;
+        r
     }
 
     /// The GPU bitmap for `id`, uploading it now if needed. `None` if the image no longer exists.
@@ -180,9 +208,12 @@ impl ImageStore {
             return Some(b.clone());
         }
         let data = self.cache.get(id)?;
+        let t0 = clock::now();
         let bmp = upload(dc, &data)
             .map_err(|e| crate::warn!("cannot upload image {}: {e}", id.0))
             .ok()?;
+        self.uploads += 1;
+        self.upload_ms += ((clock::now() - t0) * 1000.0) as f32;
         self.bitmaps.insert(id.0, bmp.clone());
         Some(bmp)
     }
@@ -245,6 +276,9 @@ pub struct Renderer {
     alpha: Vec<f32>,
     /// For each pushed clip: `true` if it was a layer (needs `PopLayer`), `false` for an axis clip.
     clips: Vec<bool>,
+    /// What the frame being drawn had to build (see [`FrameStats`]); `Cell` because geometry is
+    /// built from `&self`.
+    stats: Cell<FrameStats>,
 }
 
 fn pick_family(dw: &IDWriteFactory, candidates: &[&str]) -> String {
@@ -314,6 +348,7 @@ impl Renderer {
                 xform: vec![Mat::IDENTITY],
                 alpha: vec![1.0],
                 clips: Vec::new(),
+                stats: Cell::new(FrameStats::default()),
             })
         }
     }
@@ -333,7 +368,22 @@ impl Renderer {
 
     // ----- geometry -------------------------------------------------------------------------
 
+    /// What the last frame had to build (reset by the next [`Renderer::draw`]).
+    pub fn frame_stats(&self) -> FrameStats {
+        self.stats.get()
+    }
+
     fn geometry(&self, gpu: &GpuStack, path: &Path) -> Result<ID2D1PathGeometry1> {
+        let t0 = clock::now();
+        let geom = self.build_geometry(gpu, path)?;
+        let mut st = self.stats.get();
+        st.geometries += 1;
+        st.geometry_ms += ((clock::now() - t0) * 1000.0) as f32;
+        self.stats.set(st);
+        Ok(geom)
+    }
+
+    fn build_geometry(&self, gpu: &GpuStack, path: &Path) -> Result<ID2D1PathGeometry1> {
         unsafe {
             let geom = gpu.d2d_factory.CreatePathGeometry()?;
             let sink = geom.Open()?;
@@ -476,12 +526,17 @@ impl Renderer {
         if let Some(l) = self.layouts.get(&key) {
             return Ok(l.clone());
         }
+        let t0 = clock::now();
         let format = self.text_format(gpu, style)?;
         let utf16: Vec<u16> = text.encode_utf16().collect();
         let layout = unsafe {
             gpu.dwrite
                 .CreateTextLayout(&utf16, &format, w.max(1.0), h.max(1.0))?
         };
+        let mut st = self.stats.get();
+        st.layouts += 1;
+        st.layout_ms += ((clock::now() - t0) * 1000.0) as f32;
+        self.stats.set(st);
         // Layouts are kept between animations (throwing them away at the end of every one made the
         // first frame of the next one slow: it had to build every string again). The cache is
         // bounded instead; a string that changes all the time (a timer) only fills it slowly.
@@ -496,6 +551,8 @@ impl Renderer {
 
     /// Draw the list. The caller has already called `BeginDraw` and cleared the target.
     pub fn draw(&mut self, gpu: &GpuStack, list: &DrawList, images: &mut ImageStore) -> Result<()> {
+        self.stats.set(FrameStats::default());
+        let _ = images.take_upload_stats();
         self.xform.clear();
         self.xform.push(Mat::IDENTITY);
         self.alpha.clear();

@@ -798,13 +798,22 @@ impl App {
             // went (the first few per run; a flood would be noise).
             if let Some(t) = times
                 && f64::from(total_ms) > 2.2 * self.period * 1000.0
-                && self.slow_frames_logged < 30
+                && self.slow_frames_logged < 80
             {
                 self.slow_frames_logged += 1;
                 warn!(
-                    "slow frame {total_ms:.1} ms: update+compose {:.1}, render {:.1}, present {:.1}",
+                    "slow frame {total_ms:.1} ms: update+compose {:.1}, render {:.1} (set-up {:.1}, display list {:.1}, EndDraw {:.1}; built {} text layout(s) in {:.1} ms, {} geometries in {:.1} ms, uploaded {} image(s) in {:.1} ms), present {:.1}",
                     ((t_composed - t_start) * 1000.0),
                     t.render_ms,
+                    t.setup_ms,
+                    t.commands_ms,
+                    t.end_ms,
+                    t.built.layouts,
+                    t.built.layout_ms,
+                    t.built.geometries,
+                    t.built.geometry_ms,
+                    t.built.uploads,
+                    t.built.upload_ms,
                     t.present_ms
                 );
             }
