@@ -349,6 +349,9 @@ enum Act {
     AwakePage,
     AwakeClick,
     AwakeCheck,
+    SwPage,
+    SwClick,
+    SwCheck,
     FinalRelease,
     FinalMemory,
     Report,
@@ -492,9 +495,12 @@ const SCRIPT: &[(f64, Act)] = &[
     (120.3, Act::AwakePage),
     (121.3, Act::AwakeClick),
     (121.6, Act::AwakeCheck),
-    (122.0, Act::FinalRelease),
-    (123.6, Act::FinalMemory),
-    (124.0, Act::Report),
+    (122.0, Act::SwPage),
+    (123.0, Act::SwClick),
+    (124.6, Act::SwCheck),
+    (125.0, Act::FinalRelease),
+    (126.6, Act::FinalMemory),
+    (127.0, Act::Report),
 ];
 
 const CLIP_TEXT: &str = "Selftest clipboard text";
@@ -2552,6 +2558,32 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
             if !off || !chip {
                 st.fail("keep awake: the second click did not release the request".into());
             }
+        }
+        Act::SwPage => match a.host.page_of("pomodoro") {
+            Some(p) => {
+                a.shell.set_page(now, p);
+                a.expand(Trigger::Hotkey);
+            }
+            None => st.fail("the focus page is not in the ring".into()),
+        },
+        Act::SwClick => {
+            if !click_region(a, 6) {
+                st.fail("stopwatch: the focus page has no stopwatch button to click".into());
+            }
+        }
+        Act::SwCheck => {
+            let text = drawn_text(a);
+            let running = text
+                .iter()
+                .any(|t| t.starts_with("0:") && t.len() == 4 && t != "0:00");
+            st.say(format!(
+                "stopwatch: a second after the click the page shows it counting: {running} ({:?})",
+                text.iter().filter(|t| t.contains(':')).collect::<Vec<_>>()
+            ));
+            if a.cfg.pomodoro.stopwatch && !running {
+                st.fail("stopwatch: it did not count after the click".into());
+            }
+            click_region(a, 6); // pause it again
         }
         Act::FinalRelease => {
             // Every page has been opened and every module exercised by now. Close it all and let

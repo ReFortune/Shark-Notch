@@ -26,7 +26,7 @@ matter right now (a microphone in use, a timer, the next meeting, a download, yo
 | **Shelf** | Drop files on the notch (a drag toward the top opens it), drag them out again. It holds *references*: your files are never moved or deleted | |
 | **Notifications** | Banners your iPhone shortcuts send, as a pop-up and a short list, with a "missed" badge after a fullscreen session. Windows' own notifications are not read (Windows allows that only to apps with package identity) | [`docs/IPHONE_SHORTCUTS.md`](docs/IPHONE_SHORTCUTS.md) |
 | **Calendar** | Your ICS feeds (Outlook, Google, iCloud): month grid, agenda, a **Join** button, a countdown chip | [`docs/CALENDAR_AND_FOCUS.md`](docs/CALENDAR_AND_FOCUS.md) |
-| **Focus** | Pomodoro timer with a task list | same |
+| **Focus** | Pomodoro timer with a task list and a stopwatch | same |
 | **Live** | A chip while a program uses the microphone or camera, quick timers, browser downloads in progress | [`docs/LIVE.md`](docs/LIVE.md) |
 | **Stats** | CPU, memory, GPU, network and battery, with a minute of history; measured only while the page is open | [`docs/STATS.md`](docs/STATS.md) |
 | **Controls** | Volume, brightness, Wi-Fi, Bluetooth, a snip button, Keep awake, microphone mute, Windows' Focus state (read only) | [`docs/CONTROL.md`](docs/CONTROL.md) |

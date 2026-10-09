@@ -39,6 +39,8 @@ const HIT_SKIP: HitId = HitId(2);
 const HIT_RESET: HitId = HitId(3);
 const HIT_ADD: HitId = HitId(4);
 const HIT_CLEAR_DONE: HitId = HitId(5);
+const HIT_SW_PLAY: HitId = HitId(6);
+const HIT_SW_RESET: HitId = HitId(7);
 const HIT_START_NEXT: HitId = HitId(900);
 
 fn hit_check(i: usize) -> HitId {
@@ -122,6 +124,9 @@ pub struct Pomodoro {
     notice: Option<Finished>,
     unseen: Option<Finished>,
     last_saved: String,
+    /// Stopwatch: time banked while stopped, and when it was last started (monotonic seconds).
+    sw_banked: f64,
+    sw_since: Option<f64>,
 }
 
 impl Pomodoro {
@@ -138,6 +143,8 @@ impl Pomodoro {
             notice: None,
             unseen: None,
             last_saved: String::new(),
+            sw_banked: 0.0,
+            sw_since: None,
         }
     }
 
@@ -340,6 +347,57 @@ impl Pomodoro {
         }
     }
 
+    /// Seconds on the stopwatch at `now` (monotonic seconds).
+    fn sw_elapsed(&self, now: f64) -> f64 {
+        self.sw_banked + self.sw_since.map_or(0.0, |s| (now - s).max(0.0))
+    }
+
+    fn draw_stopwatch(&self, cv: &mut Canvas, area: Rect, now: f64) {
+        let th = *cv.theme;
+        let secs = self.sw_elapsed(now) as i64;
+        let running = self.sw_since.is_some();
+        let clock = if secs >= 3600 {
+            format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
+        } else {
+            format!("{}:{:02}", secs / 60, secs % 60)
+        };
+        cv.text(
+            Rect::new(area.x, area.y, 78.0, area.h),
+            "Stopwatch",
+            TextStyle::label(),
+            th.text_dim,
+        );
+        cv.text(
+            Rect::new(area.x + 80.0, area.y, 84.0, area.h),
+            clock,
+            TextStyle::new(16.0, Weight::SemiBold).tabular(),
+            if running { th.accent } else { th.text },
+        );
+        let hot = |id| self.hover == Some(id);
+        let (play, reset) = (
+            Rect::new(area.x + 170.0, area.y + 1.0, 26.0, 26.0),
+            Rect::new(area.x + 200.0, area.y + 1.0, 26.0, 26.0),
+        );
+        cv.icon_button(
+            play,
+            if running { Icon::Pause } else { Icon::Play },
+            HIT_SW_PLAY,
+            th.text,
+            Some(if hot(HIT_SW_PLAY) {
+                th.surface_hi
+            } else {
+                th.surface
+            }),
+        );
+        cv.icon_button(
+            reset,
+            Icon::Reset,
+            HIT_SW_RESET,
+            th.text_dim,
+            hot(HIT_SW_RESET).then_some(th.surface),
+        );
+    }
+
     fn draw_tasks(&self, cv: &mut Canvas, area: Rect) {
         let th = *cv.theme;
         let open = self.todos.open_count();
@@ -517,7 +575,7 @@ impl Module for Pomodoro {
     }
 
     fn expanded_size(&self) -> Size {
-        Size::new(424.0, 236.0)
+        Size::new(424.0, 236.0 + if self.cfg.stopwatch { 34.0 } else { 0.0 })
     }
 
     fn peek_size(&self) -> Option<Size> {
@@ -652,6 +710,20 @@ impl Module for Pomodoro {
         }
         let now = Self::unix(cx.env);
         match input {
+            Input::Click(_) if hit == Some(HIT_SW_PLAY) && self.cfg.stopwatch => {
+                match self.sw_since.take() {
+                    Some(s) => self.sw_banked += (cx.now - s).max(0.0),
+                    None => self.sw_since = Some(cx.now),
+                }
+                cx.request_redraw();
+                true
+            }
+            Input::Click(_) if hit == Some(HIT_SW_RESET) && self.cfg.stopwatch => {
+                self.sw_banked = 0.0;
+                self.sw_since = self.sw_since.map(|_| cx.now);
+                cx.request_redraw();
+                true
+            }
             Input::Move(_) => {
                 if hit != self.hover {
                     self.hover = hit;
@@ -827,12 +899,21 @@ impl Module for Pomodoro {
     }
 
     fn draw_expanded(&mut self, cv: &mut Canvas, area: Rect, dx: &DrawCx) {
+        let top_h = if self.cfg.stopwatch {
+            area.h - 34.0
+        } else {
+            area.h
+        };
         let (left, right) = (
-            Rect::new(area.x, area.y, 140.0, area.h),
-            Rect::new(area.x + 160.0, area.y, (area.w - 160.0).max(0.0), area.h),
+            Rect::new(area.x, area.y, 140.0, top_h),
+            Rect::new(area.x + 160.0, area.y, (area.w - 160.0).max(0.0), top_h),
         );
         self.draw_timer(cv, left, dx.env);
         self.draw_tasks(cv, right);
+        if self.cfg.stopwatch {
+            let bar = Rect::new(area.x, area.y + area.h - 28.0, 240.0, 28.0);
+            self.draw_stopwatch(cv, bar, dx.now);
+        }
     }
 }
 
@@ -1435,5 +1516,41 @@ mod tests {
             None,
             "an idle timer needs no wake-ups"
         );
+    }
+
+    #[test]
+    fn the_stopwatch_counts_pauses_resumes_and_resets() {
+        let mut t = T::new();
+        assert!(texts(&t.draw()).contains(&"0:00".to_string()));
+        assert!(t.click(HIT_SW_PLAY));
+        t.now += 65.0;
+        assert!(texts(&t.draw()).contains(&"1:05".to_string()));
+        assert!(t.click(HIT_SW_PLAY), "pause");
+        t.now += 30.0;
+        assert!(
+            texts(&t.draw()).contains(&"1:05".to_string()),
+            "paused: frozen"
+        );
+        assert!(t.click(HIT_SW_PLAY), "resume");
+        t.now += 3600.0;
+        assert!(texts(&t.draw()).contains(&"1:01:05".to_string()));
+        assert!(t.click(HIT_SW_RESET));
+        assert!(
+            texts(&t.draw()).contains(&"0:00".to_string()),
+            "restarts from zero, still running"
+        );
+        t.now += 5.0;
+        assert!(texts(&t.draw()).contains(&"0:05".to_string()));
+        // The focus timer is a separate thing: it never ran.
+        assert!(!t.m.timer().running());
+    }
+
+    #[test]
+    fn the_stopwatch_can_be_switched_off() {
+        let mut t = T::new();
+        t.m.cfg.stopwatch = false;
+        assert!(!texts(&t.draw()).contains(&"Stopwatch".to_string()));
+        assert!(!t.click(HIT_SW_PLAY));
+        assert_eq!(t.m.expanded_size().h, 236.0);
     }
 }

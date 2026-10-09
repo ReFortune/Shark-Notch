@@ -429,6 +429,8 @@ pub struct PomodoroCfg {
     /// Play the system chime when a session or break ends (never while a fullscreen app is in front).
     pub sound: bool,
     pub peek_secs: f32,
+    /// A stopwatch under the timer on the Focus page.
+    pub stopwatch: bool,
 }
 
 impl Default for PomodoroCfg {
@@ -443,6 +445,7 @@ impl Default for PomodoroCfg {
             auto_start_focus: false,
             sound: true,
             peek_secs: 6.0,
+            stopwatch: true,
         }
     }
 }
@@ -1185,6 +1188,7 @@ auto_start_breaks = true
 auto_start_focus = false
 sound = true                   # the system chime when a session or break ends (never over a fullscreen app)
 peek_secs = 6.0
+stopwatch = true                # a stopwatch under the timer on the Focus page
 
 [live]
 enabled = true

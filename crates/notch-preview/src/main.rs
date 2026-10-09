@@ -461,6 +461,7 @@ fn modules_sheet(out: &str, theme: Theme) {
             wifi: notch_core::events::Radio::On,
             bluetooth: notch_core::events::Radio::Off,
             dnd: Some(false),
+            mic_muted: Some(false),
         })),
     )]);
     // System stats: a minute of readings (a busy stretch in the middle), on battery.

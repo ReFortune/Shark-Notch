@@ -91,6 +91,9 @@ every fourth session. Press play, pick a task, work.
   credited to its task, when the PC wakes. One that runs out while the app is *closed* comes back
   stopped at the start of its phase with nothing credited (the notch cannot know you were working);
   one still running when the app restarts carries on.
+* **Stopwatch** (`[pomodoro] stopwatch`, on by default): a row under the timer with start/pause and
+  reset. It counts on the monotonic clock, shows `m:ss` (`h:mm:ss` past an hour), refreshes once a
+  second while the page is open, and is not saved: closing the app forgets it.
 
 ### What is stored
 
