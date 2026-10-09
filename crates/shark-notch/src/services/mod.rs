@@ -380,9 +380,11 @@ impl Services {
                 true
             }
             // Handled by the app itself (they need the UI thread or the config path).
-            Command::OpenUrl(_) | Command::OpenConfig | Command::Chime | Command::Reveal(_) => {
-                false
-            }
+            Command::OpenUrl(_)
+            | Command::OpenConfig
+            | Command::SetBool { .. }
+            | Command::Chime
+            | Command::Reveal(_) => false,
         }
     }
 

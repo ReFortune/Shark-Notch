@@ -1259,6 +1259,11 @@ impl App {
                 self.services.command(&c);
             }
             Command::OpenConfig => self.open_config(),
+            Command::SetBool {
+                section,
+                key,
+                value,
+            } => self.write_bool(section, key, value),
             Command::Reveal(path) => {
                 if self.opts.selftest {
                     self.last_reveal = Some(path.clone());
@@ -1798,25 +1803,29 @@ impl App {
     // ----- config -----------------------------------------------------------------------------
 
     /// Write the tray's choice into `config.toml`. That file decides `autostart` at every launch, so
-    /// a choice that lived only in the Run entry would be undone by the next start. Only that one
-    /// line changes (see `notch_core::config::with_bool`); the rest of the file is the user's.
+    /// a choice that lived only in the Run entry would be undone by the next start.
     fn remember_autostart(&mut self, on: bool) {
         self.cfg.general.autostart = on;
+        self.write_bool("general", "autostart", on);
+    }
+
+    /// Change one boolean in `config.toml`; only that line changes (see
+    /// `notch_core::config::with_bool`), the rest of the file is the user's. The file watcher
+    /// reloads it, which is what applies the change.
+    pub(crate) fn write_bool(&mut self, section: &str, key: &str, on: bool) {
         let path = self.config_path.clone();
         let Ok(text) = std::fs::read_to_string(&path) else {
-            self.set_status("autostart is set, but config.toml could not be read to remember it");
+            self.set_status("config.toml could not be read to save the setting");
             return;
         };
-        let edited = notch_core::config::with_bool(&text, "general", "autostart", on);
+        let edited = notch_core::config::with_bool(&text, section, key, on);
         if edited == text {
             return;
         }
         let tmp = path.with_extension("toml.tmp");
         if let Err(e) = std::fs::write(&tmp, &edited).and_then(|()| std::fs::rename(&tmp, &path)) {
             let _ = std::fs::remove_file(&tmp);
-            self.set_status(format!(
-                "autostart is set, but config.toml could not be updated: {e}"
-            ));
+            self.set_status(format!("config.toml could not be updated: {e}"));
         }
     }
 

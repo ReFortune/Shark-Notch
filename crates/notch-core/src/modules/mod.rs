@@ -12,6 +12,7 @@ pub mod media;
 pub mod notifications;
 pub mod phone;
 pub mod pomodoro;
+pub mod settings;
 pub mod shelf;
 pub mod stats;
 
@@ -61,6 +62,10 @@ pub fn registry() -> Vec<Factory> {
         Factory {
             id: "clock",
             create: clock::create,
+        },
+        Factory {
+            id: "settings",
+            create: settings::create,
         },
     ]
 }

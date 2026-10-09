@@ -169,6 +169,12 @@ pub enum Command {
     Stats(StatsCmd),
     Control(ControlCmd),
     Phone(PhoneCmd),
+    /// Write one boolean into `config.toml` (the file reload applies it).
+    SetBool {
+        section: &'static str,
+        key: &'static str,
+        value: bool,
+    },
 }
 
 /// Requests that concern the shell itself.

@@ -344,6 +344,9 @@ enum Act {
     PhoneBusyCheck,
     PhoneFreed,
     PhoneFreedOff,
+    SettingsPage,
+    SettingsClick,
+    SettingsCheck,
     FinalRelease,
     FinalMemory,
     Report,
@@ -482,9 +485,12 @@ const SCRIPT: &[(f64, Act)] = &[
     (117.8, Act::PhoneBusyCheck),
     (117.9, Act::PhoneFreed),
     (118.4, Act::PhoneFreedOff),
-    (118.8, Act::FinalRelease),
-    (120.4, Act::FinalMemory),
-    (120.8, Act::Report),
+    (118.6, Act::SettingsPage),
+    (119.6, Act::SettingsClick),
+    (120.0, Act::SettingsCheck),
+    (120.2, Act::FinalRelease),
+    (121.8, Act::FinalMemory),
+    (122.2, Act::Report),
 ];
 
 const CLIP_TEXT: &str = "Selftest clipboard text";
@@ -2520,6 +2526,33 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
             if a.services.phone_port().is_some() {
                 st.fail("phone: the listener survived [phone] listen = false (second time)".into());
             }
+        }
+        Act::SettingsPage => match a.host.page_of("settings") {
+            Some(p) => {
+                a.shell.set_page(now, p);
+                a.expand(Trigger::Hotkey);
+            }
+            None => st.fail("the settings page is not in the ring".into()),
+        },
+        Act::SettingsClick => {
+            // The Clock row is the last one: its click must reach config.toml (the self-test's own).
+            let clock = notch_core::modules::settings::SWITCHES.len() as u32;
+            if !click_region(a, clock) {
+                st.fail("settings: the Clock switch has no region to click".into());
+            }
+        }
+        Act::SettingsCheck => {
+            let saved = std::fs::read_to_string(&a.config_path)
+                .ok()
+                .and_then(|t| notch_core::config::Config::parse(&t).ok())
+                .map(|l| l.config.clock.enabled);
+            st.say(format!(
+                "settings: a click on the Clock switch wrote clock.enabled = {saved:?} to config.toml"
+            ));
+            if saved != Some(false) {
+                st.fail("settings: the click did not turn clock.enabled off in the file".into());
+            }
+            a.write_bool("clock", "enabled", true);
         }
         Act::FinalRelease => {
             // Every page has been opened and every module exercised by now. Close it all and let

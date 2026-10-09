@@ -250,6 +250,19 @@ pub enum HourFormat {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+pub struct SettingsCfg {
+    /// The settings page: one switch per module.
+    pub enabled: bool,
+}
+
+impl Default for SettingsCfg {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ClockCfg {
     pub enabled: bool,
     /// `"system"`, `"12"` or `"24"`.
@@ -564,6 +577,7 @@ impl Default for Modules {
                 "control".into(),
                 "phone".into(),
                 "clock".into(),
+                "settings".into(),
             ],
         }
     }
@@ -591,6 +605,7 @@ pub struct Config {
     pub control: ControlCfg,
     pub phone: PhoneCfg,
     pub clock: ClockCfg,
+    pub settings: SettingsCfg,
 }
 
 /// Result of loading a config text.
@@ -921,11 +936,9 @@ impl Config {
         }
     }
 
-    /// Is module `id` both listed in `modules.order` and enabled in its own section? The module host
-    /// and the platform services (which own the OS-side producers) use the same answer, so a
-    /// disabled module costs nothing: no object, no thread, no subscription.
-    pub fn module_active(&self, id: &str) -> bool {
-        let enabled = match id {
+    /// Is module `id` enabled in its own section (whether or not `modules.order` lists it)?
+    pub fn module_enabled(&self, id: &str) -> bool {
+        match id {
             "clock" => self.clock.enabled,
             "media" => self.media.enabled,
             "clipboard" => self.clipboard.enabled,
@@ -937,9 +950,16 @@ impl Config {
             "stats" => self.stats.enabled,
             "control" => self.control.enabled,
             "phone" => self.phone.enabled,
+            "settings" => self.settings.enabled,
             _ => false,
-        };
-        enabled && self.modules.order.iter().any(|m| m == id)
+        }
+    }
+
+    /// Is module `id` both listed in `modules.order` and enabled in its own section? The module host
+    /// and the platform services (which own the OS-side producers) use the same answer, so a
+    /// disabled module costs nothing: no object, no thread, no subscription.
+    pub fn module_active(&self, id: &str) -> bool {
+        self.module_enabled(id) && self.modules.order.iter().any(|m| m == id)
     }
 
     /// Spring-time parameters etc. that the shell derives from the config.
@@ -1116,7 +1136,7 @@ show_missed_indicator = true
 peek_over_fullscreen = false
 
 [modules]
-order = ["media", "clipboard", "shelf", "notifications", "calendar", "pomodoro", "live", "stats", "control", "phone", "clock"]   # page order; a module that is disabled in its own section is skipped
+order = ["media", "clipboard", "shelf", "notifications", "calendar", "pomodoro", "live", "stats", "control", "phone", "clock", "settings"]   # page order; a module that is disabled in its own section is skipped
 
 [media]
 enabled = true                 # follows whatever Windows considers the current media session
@@ -1198,6 +1218,9 @@ enabled = true
 hour_format = "system"         # system | 12 | 24
 show_seconds = false           # also makes the clock page refresh every second while it is open
 show_week = true
+
+[settings]
+enabled = true                 # the page with a switch for every module
 "##;
 
 #[cfg(test)]

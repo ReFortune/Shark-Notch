@@ -64,11 +64,13 @@ pub enum Icon {
     Sun,
     /// Corner brackets: a screen snip.
     Snip,
+    /// A cog: settings.
+    Gear,
 }
 
 impl Icon {
     /// Every icon, for tests and the preview tool.
-    pub const ALL: [Icon; 37] = [
+    pub const ALL: [Icon; 38] = [
         Icon::Play,
         Icon::Pause,
         Icon::Next,
@@ -106,6 +108,7 @@ impl Icon {
         Icon::SpeakerMuted,
         Icon::Sun,
         Icon::Snip,
+        Icon::Gear,
     ];
 }
 
@@ -539,6 +542,27 @@ pub fn ops(icon: Icon) -> Vec<IconOp> {
                         false,
                     ),
                     2.0,
+                ));
+            }
+            v
+        }
+        Icon::Gear => {
+            let mut v = vec![
+                Stroke(circle_path(12.0, 12.0, 3.2), 2.0),
+                Stroke(circle_path(12.0, 12.0, 6.6), 2.0),
+            ];
+            for k in 0..8 {
+                let a = (k as f32 * 45.0).to_radians();
+                let (s, c) = (a.sin(), a.cos());
+                v.push(Stroke(
+                    polyline(
+                        &[
+                            (12.0 + 7.0 * s, 12.0 - 7.0 * c),
+                            (12.0 + 9.6 * s, 12.0 - 9.6 * c),
+                        ],
+                        false,
+                    ),
+                    3.0,
                 ));
             }
             v
