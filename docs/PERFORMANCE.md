@@ -120,7 +120,10 @@ Pattern found late: these frames are **not** the first of their burst (they were
 across 150 bursts in four runs, 48 of the 50 bursts with a 100 ms+ frame were bursts whose frames
 had been presented far faster than the refresh rate (median interval under 3 ms); only 2 of 63 paced
 bursts had one. That points at presents queuing faster than this virtual display consumes them. A
-limiter on the present rate is the obvious next experiment; **it has not been run**. Nothing here
+limiter on the present rate was tried (CI run 30): no frame then sat in `EndDraw` for more than 40 ms
+(longest frame 32 ms, the UI thread stayed free), but the same delay turned up in the frame loop as
+gaps of 1.3-3 s between frames in 6 bursts, so it was **taken out again**: the delay is the virtual
+machine's compositor, and holding frames back does not make it shorter. Nothing here
 shows your machine is free of such frames: run `--selftest` and look at the "render thread" lines.
 
 ## Memory after a full session
@@ -188,8 +191,9 @@ What the history shows:
   GPU released 4.6 → 6.5 MiB. The released working set is the trimmed snapshot (0.2–0.3 MiB).
 * **The slow frames are all inside Direct2D drawing.** Across 13 self-test runs, all 192 "slow frame"
   warnings had update + compose ≤ 0.3 ms and present ≤ 0.8 ms; render was at least 95 % of the frame.
-  The worst ones are the first draw of something new (the first notification banner cost 379–483 ms
-  in 7 of the 9 runs that have it; the Live timer banner 413 and 680 ms).
+  Early runs read the worst ones as "the first draw of something new" (the first notification banner
+  cost 379–483 ms in 7 of 9 runs). Later runs, which log the frame's place in its burst, showed they
+  are frames 7–29 of their bursts and wait on the graphics device (see the frame-time section).
 * **Some "hitches" are not drawing at all.** In the phase 8–10 run, 35 of the 91 sat in bursts whose
   worst interval was ≤ 35 ms (one missed 15.6 ms tick, mostly collapses with under 2 ms of CPU): the
   virtual display's pacing, not load.
