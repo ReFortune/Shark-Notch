@@ -24,11 +24,11 @@ matter right now (a microphone in use, a timer, the next meeting, a download, yo
 | **Media** | Whatever Windows thinks is playing: art, title, seek bar, controls, level bars; optionally (off by default) the line being sung, from lrclib.net | [`docs/MEDIA.md`](docs/MEDIA.md) |
 | **Clipboard** | History of text, links and images; pin; click to copy back; items from your iPhone are labelled | |
 | **Shelf** | Drop files on the notch (a drag toward the top opens it), drag them out again. It holds *references*: your files are never moved or deleted | |
-| **Notifications** | Banners your iPhone shortcuts send, as a pop-up and a short list, with a "missed" badge after a fullscreen session. Windows' own notifications are not read (Windows allows that only to apps with package identity) | [`docs/IPHONE_SHORTCUTS.md`](docs/IPHONE_SHORTCUTS.md) |
+| **Notifications** (pop-up only, no page) | A short banner for what your iPhone shortcuts send, and one "while you were away" banner after a fullscreen session. Windows' own notifications are not read (Windows allows that only to apps with package identity) | [`docs/IPHONE_SHORTCUTS.md`](docs/IPHONE_SHORTCUTS.md) |
 | **Calendar** | Your ICS feeds (Outlook, Google, iCloud): month grid, agenda, a **Join** button, a countdown chip | [`docs/CALENDAR_AND_FOCUS.md`](docs/CALENDAR_AND_FOCUS.md) |
 | **Focus** | Pomodoro timer with a task list and a stopwatch | same |
 | **Live** | A chip while a program uses the microphone or camera, quick timers, browser downloads in progress | [`docs/LIVE.md`](docs/LIVE.md) |
-| **Stats** | CPU, memory, GPU, network and battery, with a minute of history (measured only while the page is open), connected Bluetooth devices with their batteries, Claude Code's token use today (from its own logs, nothing sent anywhere), and a banner when the charger is plugged in or the battery is full | [`docs/STATS.md`](docs/STATS.md) |
+| **Stats** | CPU, memory, GPU, network and battery, with a minute of history (measured only while the page is open), connected Bluetooth devices with their batteries, a chip while Claude Code works (from its own logs, nothing sent anywhere), and a banner when the charger is plugged in or the battery is full | [`docs/STATS.md`](docs/STATS.md) |
 | **Controls** | Volume, brightness, Wi-Fi, Bluetooth, a snip button, Keep awake, microphone mute, Windows' Focus state (read only) | [`docs/CONTROL.md`](docs/CONTROL.md) |
 | **iPhone link** (no page) | iOS Shortcuts send clipboard text, files and banners; banners appear as notifications marked "· iPhone". Tray: *Copy iPhone token* / *New iPhone token* | [`docs/IPHONE_SHORTCUTS.md`](docs/IPHONE_SHORTCUTS.md) |
 | **Clock** | Time, date, week number | |
@@ -197,7 +197,7 @@ Three tiers, and each claim in the docs says which one it is in:
 | 3 | Media (SMTC, album art, controls, seek, visualizer) | implemented — needs your hardware for the live SMTC check |
 | 4 | Clipboard history (text, links, images; pin; re-copy) | implemented |
 | 5 | File shelf (OLE drop target, drag out) | implemented — real drag-and-drop needs your hardware |
-| 6 | Notifications (banner, list, missed badge) | implemented for the iPhone link only; reading Windows' own notifications was dropped (it needs a package identity and never worked here) |
+| 6 | Notifications (banner) | implemented for the iPhone link only, as a pop-up with no page; reading Windows' own notifications was dropped (it needs a package identity and never worked here) |
 | 7 | Calendar (ICS feeds, month view, Join banner, countdown chip) + Pomodoro with tasks | implemented — real feeds and typing need your machine, see [`docs/CALENDAR_AND_FOCUS.md`](docs/CALENDAR_AND_FOCUS.md) |
 | 8 | Live activities (microphone/camera chip, quick timers, browser downloads with *Show in folder*) | implemented — the privacy chip and real browsers need your machine; copy progress is **not** feasible, see [`docs/LIVE.md`](docs/LIVE.md) |
 | 9 | System stats (CPU, memory, GPU, network, battery; read only while the page is open) | implemented — GPU counters and battery need your hardware, see [`docs/STATS.md`](docs/STATS.md) |

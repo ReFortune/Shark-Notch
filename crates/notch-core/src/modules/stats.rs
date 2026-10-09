@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::aiusage::{Totals, fmt_tokens};
-use crate::claudelimits::{LimitsState, Window, fmt_until_short};
+use crate::claudelimits::LimitsState;
 use crate::color::Color;
 use crate::config::{Config, StatsCfg};
 use crate::draw::{Align, Canvas, Text, TextStyle, Weight};
@@ -60,9 +60,8 @@ pub struct Stats {
     /// Claude Code's token use today, as last reported, and whether it is working right now.
     ai: Option<Totals>,
     ai_chip: bool,
-    /// Claude's plan limits, as last read (opt-in), and polls since they were last asked for.
+    /// Claude's plan limits, as last read (opt-in; asked for when Claude Code starts working).
     limits: Option<Arc<LimitsState>>,
-    limits_polls: u32,
     suspended: bool,
 }
 
@@ -93,7 +92,6 @@ impl Stats {
             ai: None,
             ai_chip: false,
             limits: None,
-            limits_polls: 0,
             suspended: false,
         }
     }
@@ -198,79 +196,15 @@ impl Stats {
 
     /// Height the optional strips (Bluetooth devices, Claude Code) add to the page.
     fn extra_height(&self) -> f32 {
-        (BATTERY_H + GAP) * (usize::from(self.cfg.devices) + usize::from(self.cfg.ai_usage)) as f32
+        if self.cfg.devices {
+            BATTERY_H + GAP
+        } else {
+            0.0
+        }
     }
 
     /// How long Claude Code counts as "working" after its logs last grew.
     const AI_ACTIVE_SECS: i64 = 90;
-
-    fn draw_ai(&self, cv: &mut Canvas, r: Rect, unix: i64) {
-        let th = *cv.theme;
-        cv.squircle(r, 10.0, th.surface);
-        cv.text(
-            Rect::new(r.x + 12.0, r.y, 86.0, r.h),
-            "Claude Code",
-            TextStyle::new(11.5, Weight::SemiBold),
-            th.text_dim,
-        );
-        let body = Rect::new(r.x + 100.0, r.y, r.w - 110.0, r.h);
-        let note = |cv: &mut Canvas, text: String, color| {
-            cv.text(body, text, TextStyle::caption(), color);
-        };
-        if self.cfg.ai_limits {
-            match self.limits.as_deref() {
-                Some(LimitsState::Known(l)) => {
-                    let w = body.w * 0.5;
-                    for (i, (label, win)) in [("5 h", l.five_hour), ("Week", l.seven_day)]
-                        .into_iter()
-                        .enumerate()
-                    {
-                        self.draw_window(
-                            cv,
-                            Rect::new(body.x + i as f32 * w, r.y, w - 8.0, r.h),
-                            label,
-                            win,
-                            unix,
-                        );
-                    }
-                    return;
-                }
-                Some(LimitsState::SignedOut) => {
-                    return note(
-                        cv,
-                        "Sign in to Claude Code to see limits".into(),
-                        th.text_faint,
-                    );
-                }
-                Some(LimitsState::Expired) => {
-                    return note(
-                        cv,
-                        "Login expired: use Claude Code once".into(),
-                        th.text_faint,
-                    );
-                }
-                Some(LimitsState::Failed) => {
-                    return note(cv, "Limits unavailable right now".into(), th.text_faint);
-                }
-                None => return note(cv, "…".into(), th.text_faint),
-            }
-        }
-        let (text, color) = match self.ai {
-            None => ("…".to_string(), th.text_faint),
-            Some(t) if t.messages == 0 => ("Nothing today".to_string(), th.text_faint),
-            Some(t) => (
-                format!(
-                    "{} out · {} in · {} message{} today",
-                    fmt_tokens(t.output),
-                    fmt_tokens(t.input),
-                    t.messages,
-                    if t.messages == 1 { "" } else { "s" }
-                ),
-                th.text,
-            ),
-        };
-        note(cv, text, color);
-    }
 
     /// What the pill chip says: the 5-hour limit's use when it is known, else today's output tokens.
     fn chip_text(&self) -> String {
@@ -282,43 +216,6 @@ impl Stats {
             Some(w) => format!("{:.0}%", w.used),
             None => fmt_tokens(self.ai.map_or(0, |t| t.output)),
         }
-    }
-
-    /// One limit: "5 h 42% · 2h10m" with a bar under it.
-    fn draw_window(&self, cv: &mut Canvas, r: Rect, label: &str, win: Option<Window>, unix: i64) {
-        let th = *cv.theme;
-        let Some(w) = win else {
-            cv.text(
-                Rect::new(r.x, r.y + 2.0, r.w, 16.0),
-                format!("{label} —"),
-                TextStyle::caption(),
-                th.text_faint,
-            );
-            return;
-        };
-        let color = if w.used >= 90.0 {
-            th.danger
-        } else if w.used >= 70.0 {
-            th.warn
-        } else {
-            th.accent
-        };
-        let mut text = format!("{label} {:.0}%", w.used);
-        if w.resets_at > 0 {
-            text.push_str(&format!(" · {}", fmt_until_short(w.resets_at, unix)));
-        }
-        cv.text(
-            Rect::new(r.x, r.y + 3.0, r.w, 15.0),
-            text,
-            TextStyle::caption().tabular(),
-            th.text,
-        );
-        cv.bar(
-            Rect::new(r.x, r.bottom() - 8.0, r.w, 4.0),
-            w.used / 100.0,
-            th.surface_hi,
-            color,
-        );
     }
 
     fn draw_devices(&self, cv: &mut Canvas, r: Rect, devices: Option<&[BtDevice]>) {
@@ -560,13 +457,6 @@ impl Module for Stats {
     }
 
     fn on_poll(&mut self, cx: &mut Cx) {
-        // Claude's limits: asked for when the page opens and then about once a minute.
-        if self.cfg.ai_limits {
-            if self.limits_polls.is_multiple_of(60) {
-                cx.command(Command::ClaudeLimits);
-            }
-            self.limits_polls += 1;
-        }
         cx.command(Command::Stats(StatsCmd::Sample {
             gpu: self.cfg.gpu,
             devices: self.cfg.devices,
@@ -601,6 +491,10 @@ impl Module for Stats {
             EventKind::AiUsage(t) => {
                 self.ai = Some(*t);
                 self.refresh_ai_chip(cx);
+                // Working now: ask for the limits (the service answers at most once a minute).
+                if self.ai_chip && self.cfg.ai_limits {
+                    cx.command(Command::ClaudeLimits);
+                }
                 cx.request_redraw();
             }
             _ => {}
@@ -608,7 +502,6 @@ impl Module for Stats {
     }
 
     fn on_visibility(&mut self, _v: Visibility, _cx: &mut Cx) {
-        self.limits_polls = 0;
         // Opening starts a fresh minute; closing drops the old one.
         self.forget();
     }
@@ -618,7 +511,7 @@ impl Module for Stats {
         cx.request_redraw();
     }
 
-    fn draw_expanded(&mut self, cv: &mut Canvas, area: Rect, dx: &DrawCx) {
+    fn draw_expanded(&mut self, cv: &mut Canvas, area: Rect, _dx: &DrawCx) {
         let th = *cv.theme;
         let tile_w = (area.w - GAP) * 0.5;
         let tile_h = ((area.h - BATTERY_H - self.extra_height() - 2.0 * GAP) * 0.5).max(40.0);
@@ -729,10 +622,6 @@ impl Module for Stats {
                 Rect::new(area.x, y, area.w, BATTERY_H),
                 snap.as_ref().and_then(|s| s.devices.as_deref()),
             );
-        }
-        if self.cfg.ai_usage {
-            y -= BATTERY_H + GAP;
-            self.draw_ai(cv, Rect::new(area.x, y, area.w, BATTERY_H), dx.env.unix);
         }
     }
 }
@@ -1197,23 +1086,29 @@ mod tests {
     }
 
     #[test]
-    fn the_claude_code_line_and_chip_follow_the_logs() {
+    fn claude_code_shows_only_a_chip_while_it_works_and_never_a_permanent_line() {
         let mut t = T::new();
-        assert!(t.texts().contains(&"…".to_string()), "nothing heard yet");
         assert_eq!(t.m.chip_width(), None);
-        // Quiet today.
+        // Quiet today: nothing on the pill, and nothing on the page either way.
         ai(&mut t, 0, 0, 0, 1_000);
-        assert!(t.texts().contains(&"Nothing today".to_string()));
         assert_eq!(t.m.chip_width(), None);
         // Working: the logs grew a few seconds ago.
         ai(&mut t, 3, 84_000, 990, 1_000);
-        let tx = t.texts();
-        assert!(tx.contains(&"Claude Code".to_string()), "{tx:?}");
-        assert!(
-            tx.contains(&"84k out · 1.2M in · 3 messages today".to_string()),
-            "{tx:?}"
-        );
         assert_eq!(t.m.chip_width(), Some(AI_CHIP_W));
+        assert_eq!(
+            t.m.chip_text(),
+            "84k",
+            "today's output tokens without the limits"
+        );
+        assert!(
+            !t.texts().iter().any(|s| s.contains("Claude")),
+            "no always-on line on the page"
+        );
+        assert_eq!(
+            t.m.expanded_size().h,
+            232.0 + 38.0,
+            "only the devices strip is extra"
+        );
         // It asks to be woken when the chip should go, and then hides it.
         let wake = t.m.next_wake(t.now, &t.env).unwrap();
         assert!((wake - t.now - 80.5).abs() < 1e-6, "{wake}");
@@ -1222,11 +1117,10 @@ mod tests {
         t.m.on_tick(&mut cx);
         assert_eq!(t.m.chip_width(), None);
         assert_eq!(t.m.next_wake(t.now, &t.env), None);
-        // Switched off: no line, no chip.
+        // Switched off: no chip.
         ai(&mut t, 3, 84_000, 1_090, 1_100);
         t.m.cfg.ai_usage = false;
         assert_eq!(t.m.chip_width(), None);
-        assert!(!t.texts().contains(&"Claude Code".to_string()));
     }
 
     fn limits_event(t: &mut T, state: LimitsState) {
@@ -1239,74 +1133,40 @@ mod tests {
     }
 
     #[test]
-    fn the_limits_replace_the_token_line_when_switched_on_and_known() {
-        use crate::claudelimits::Limits;
+    fn the_chip_shows_the_five_hour_limit_when_known_and_asks_for_it_only_while_working() {
+        use crate::claudelimits::{Limits, Window};
         let mut t = T::new();
-        ai(&mut t, 3, 84_000, 990, 1_000);
-        // Off (the default): the token line, and the limits are never asked for.
+        // Off (the default): never asked.
         assert!(!StatsCfg::default().ai_limits);
-        assert!(t.texts().iter().any(|s| s.contains("84k out")));
-        let mut cx = cx!(t);
-        t.m.on_poll(&mut cx);
+        ai(&mut t, 3, 84_000, 990, 1_000);
         assert!(!t.out.commands.contains(&Command::ClaudeLimits));
-        // On: the bars say so, with the time left, and the tokens are gone.
+        // On: asked when the logs say it is working, not when it has been quiet.
         t.m.cfg.ai_limits = true;
-        t.env.unix = 1_000;
+        ai(&mut t, 3, 84_100, 995, 1_000);
+        assert!(t.out.commands.contains(&Command::ClaudeLimits));
+        t.out.commands.clear();
+        ai(&mut t, 3, 84_100, 100, 1_000);
+        assert!(!t.out.commands.contains(&Command::ClaudeLimits), "quiet");
+        ai(&mut t, 3, 84_100, 995, 1_000);
         limits_event(
             &mut t,
             LimitsState::Known(Limits {
                 five_hour: Some(Window {
                     used: 42.4,
-                    resets_at: 1_000 + 2 * 3600 + 600,
-                }),
-                seven_day: Some(Window {
-                    used: 93.0,
                     resets_at: 0,
                 }),
+                seven_day: None,
             }),
         );
-        let tx = t.texts();
-        assert!(tx.contains(&"5 h 42% · 2h10m".to_string()), "{tx:?}");
-        assert!(tx.contains(&"Week 93%".to_string()), "{tx:?}");
-        assert!(!tx.iter().any(|s| s.contains("out ·")), "{tx:?}");
-        // The pill chip shows the 5-hour figure.
         assert_eq!(t.m.chip_text(), "42%");
-        // Other states say what is wrong, in words.
-        for (state, want) in [
-            (LimitsState::SignedOut, "Sign in to Claude Code"),
-            (LimitsState::Expired, "Login expired"),
-            (LimitsState::Failed, "unavailable"),
+        // Any other state falls back to tokens.
+        for state in [
+            LimitsState::SignedOut,
+            LimitsState::Expired,
+            LimitsState::Failed,
         ] {
             limits_event(&mut t, state);
-            assert!(t.texts().iter().any(|s| s.contains(want)), "{want}");
+            assert_eq!(t.m.chip_text(), "84.1k");
         }
-        assert_eq!(t.m.chip_text(), "84k", "no figure: back to tokens");
-    }
-
-    #[test]
-    fn the_limits_are_asked_for_when_the_page_opens_and_then_once_a_minute() {
-        let mut t = T::new();
-        t.m.cfg.ai_limits = true;
-        let mut asks = 0;
-        for i in 0..=121 {
-            let mut cx = cx!(t);
-            t.m.on_poll(&mut cx);
-            asks += t
-                .out
-                .commands
-                .iter()
-                .filter(|c| **c == Command::ClaudeLimits)
-                .count();
-            t.out.commands.clear();
-            if i == 60 {
-                // Closing and reopening the page asks again at once.
-                let mut cx = cx!(t);
-                t.m.on_visibility(Visibility::Collapsed, &mut cx);
-            }
-        }
-        assert_eq!(
-            asks, 4,
-            "polls 0 and 60 (before the reopen), then 61 and 121"
-        );
     }
 }

@@ -8,7 +8,7 @@ small server the PC runs on your own network.
 
 Everything on the notch treats a phone item exactly like a PC item (same events, same pages). Clipboard
 entries say "iPhone" and a phone notification's banner reads "<app> · iPhone"; the tiles on the shelf
-and the rows of the notification list carry no tag.
+carry no tag.
 
 > **Honest scope.** The server, the request rules and the security checks are tested in CI
 > (including a client that talks to the real listener over loopback and tries the things listed in
@@ -133,7 +133,7 @@ Nothing shows the Focus any more (there is no iPhone page); the link still accep
 
 ## A banner from your own shortcut
 
-`/notify` shows a banner ("<app> · iPhone") and adds a row to the notifications list, from any shortcut: *POST*,
+`/notify` shows a banner ("<app> · iPhone") from any shortcut: *POST*,
 JSON `title` (required), `body` and `app` (both optional). For example at the end of a long
 shortcut, so the PC tells you it finished. **iOS does not hand your phone's notifications to
 Shortcuts, so this cannot mirror them**; it only shows what a shortcut chooses to send.
@@ -151,7 +151,7 @@ uploads are refused), IPv4 only.
 | `POST /file?name=…` | the file's bytes; the name may also come as header `X-File-Name` | Saved in the inbox (below), shown on the shelf, from the phone. `200` with `{"saved": "<name>"}`. | shelf module |
 | `POST /battery` | JSON `{"percent": 0–100, "charging": true/false}` (`percent` may be text like `"82%"`; `level` also works) | Accepted, not shown. | |
 | `POST /focus` | JSON `{"name": "Work", "active": true/false}` | Shown on the page; an active Focus puts a chip on the pill. | |
-| `POST /notify` | JSON `{"title": "…", "body": "…", "app": "…"}` | A banner and a row in the notifications list, from the phone. | notifications module |
+| `POST /notify` | JSON `{"title": "…", "body": "…", "app": "…"}` | A banner, from the phone. | notifications module |
 
 A request for a module that is switched off on the PC gets `403` and a message that says so.
 
@@ -236,7 +236,7 @@ What it is protected by, and what it is not.
 | `401` | The token has a stray space or line break (copy it again), or you made a new iPhone token since. |
 | `429` | Five wrong tokens: wait, or **New iPhone token** in the tray menu. |
 | Nothing answers | The port is used by another program: change `port` (or use `0`: any free port). |
-| Nothing at all arrives, `200` answers | The module is on but the notch is hidden by a fullscreen app: look at the notifications afterwards. |
+| Nothing at all arrives, `200` answers | The module is on but the notch is hidden by a fullscreen app: the banner is not shown then; you get one "while you were away" banner when you come back. |
 | `403` | The matching module is off: `clipboard`, `shelf` or `notifications` under `[…] enabled`, or removed from `[modules] order`. |
 
 ## What is checked

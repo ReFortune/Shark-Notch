@@ -370,8 +370,6 @@ pub struct NotificationsCfg {
     pub peek: bool,
     /// How long that peek stays, in seconds.
     pub peek_secs: f32,
-    /// Notifications kept in the list.
-    pub max_items: u32,
     /// Apps (display names, case-insensitive) whose notifications are never shown here.
     pub ignore_apps: Vec<String>,
 }
@@ -382,7 +380,6 @@ impl Default for NotificationsCfg {
             enabled: true,
             peek: true,
             peek_secs: 4.0,
-            max_items: 20,
             ignore_apps: Vec::new(),
         }
     }
@@ -800,13 +797,6 @@ impl Config {
             w,
         );
         clamp_u(
-            &mut self.notifications.max_items,
-            1,
-            100,
-            "notifications.max_items",
-            w,
-        );
-        clamp_u(
             &mut self.calendar.refresh_minutes,
             5,
             1440,
@@ -1185,10 +1175,9 @@ open_on_drag = true            # a file drag heading for the top of the screen o
 max_items = 40                 # the shelf only holds references; your files are never moved or deleted
 
 [notifications]
-enabled = true                 # the page and pop-ups for banners your iPhone shortcuts send (Windows notifications are not read)
+enabled = true                 # pop-up banners for what your iPhone shortcuts send (no page; Windows notifications are not read)
 peek = true                    # briefly show a new notification while the notch is collapsed, then tuck away
 peek_secs = 4.0
-max_items = 20
 ignore_apps = []               # e.g. ["Spotify", "Steam"]
 
 [calendar]

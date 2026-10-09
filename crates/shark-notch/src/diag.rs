@@ -265,11 +265,6 @@ enum Act {
     NotifAwayCheck,
     NotifBack,
     NotifBackCheck,
-    NotifChipCheck,
-    NotifOpen,
-    NotifOpenCheck,
-    NotifClose,
-    NotifReleaseCheck,
     CalSetup,
     CalCheck,
     CalJoin,
@@ -413,11 +408,6 @@ const SCRIPT: &[(f64, Act)] = &[
     (45.6, Act::NotifAwayCheck),
     (45.7, Act::NotifBack),
     (46.6, Act::NotifBackCheck),
-    (50.4, Act::NotifChipCheck),
-    (50.6, Act::NotifOpen),
-    (52.1, Act::NotifOpenCheck),
-    (52.2, Act::NotifClose),
-    (53.8, Act::NotifReleaseCheck),
     (54.4, Act::CalSetup),
     (56.0, Act::CalCheck),
     (56.2, Act::CalJoin),
@@ -1474,8 +1464,7 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
             let got = a.bus_counts[Kind::Notification as usize] - st.notif_mark;
             let quiet = a.stage.is_none() && a.shell.presence() == Presence::Hidden;
             st.say(format!(
-                "notifications: {got} arrived while a fullscreen app was in front; windows hidden and GPU released throughout: {quiet}; badge pending: {}",
-                a.host.chips_width() > 0.0
+                "notifications: {got} arrived while a fullscreen app was in front; windows hidden and GPU released throughout: {quiet}"
             ));
             if got != 2 {
                 st.fail(
@@ -1485,11 +1474,6 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
             }
             if !quiet {
                 st.fail("notifications: something woke the notch (banner, GPU or window) while a fullscreen app was in front".into());
-            }
-            if a.host.chips_width() == 0.0 {
-                st.fail(
-                    "notifications: nothing counted the notifications missed while away".into(),
-                );
             }
         }
         Act::NotifBack => {
@@ -1507,75 +1491,6 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
             st.frames_mark = a.frames_presented;
             if a.shell.presence() != Presence::Peek || !said {
                 st.fail("notifications: no \"while you were away\" summary after returning from fullscreen".into());
-            }
-        }
-        Act::NotifChipCheck => {
-            let (presence, text) = (a.shell.presence(), drawn_text(a));
-            let frame = a.shell.frame();
-            a.maybe_release_gpu(now);
-            let kept = a.stage.is_some();
-            st.say(format!(
-                "notifications: summary tucked away (presence {presence:?}); the missed-count badge is drawn: {}; GPU kept while the badge shows: {kept}",
-                text.iter().any(|t| t == "2")
-            ));
-            st.say(format!(
-                "notifications: {} frame(s) were presented since the summary banner; pill {:.0}x{:.0} DIP, chip alpha {:.2}, content {:?}, animating {}",
-                a.frames_presented - st.frames_mark,
-                frame.shape.w,
-                frame.shape.h,
-                frame.chip_alpha,
-                frame.content_kind,
-                a.animating()
-            ));
-            if presence != Presence::Collapsed {
-                st.fail("notifications: the summary banner did not tuck itself away".into());
-            }
-            if !kept {
-                st.fail(
-                    "notifications: the GPU stack was released while the missed badge was showing"
-                        .into(),
-                );
-            }
-            if !text.iter().any(|t| t == "2") {
-                st.fail("notifications: the collapsed pill does not show the missed count".into());
-            }
-        }
-        Act::NotifOpen => match a.host.page_of("notifications") {
-            Some(p) => {
-                a.shell.set_page(now, p);
-                a.expand(Trigger::Hotkey);
-            }
-            None => st.fail("the notifications page is not in the ring".into()),
-        },
-        Act::NotifOpenCheck => {
-            let text = drawn_text(a);
-            let rows = ["Selftest ping", "Selftest away 1", "Selftest away 2"]
-                .iter()
-                .filter(|r| text.iter().any(|t| t == **r))
-                .count();
-            let cleared = a.host.chips_width() == 0.0;
-            st.say(format!(
-                "notifications: the open page lists {rows} of 3 notifications; looking at the page cleared the badge: {cleared}"
-            ));
-            if rows != 3 {
-                st.fail("notifications: the page does not list every notification".into());
-            }
-            if !cleared {
-                st.fail("notifications: the missed badge stayed after the page was opened".into());
-            }
-        }
-        Act::NotifClose => a.collapse(true),
-        Act::NotifReleaseCheck => {
-            a.maybe_release_gpu(now);
-            let released = a.stage.is_none();
-            st.say(format!(
-                "notifications: with the badge gone the GPU releases as usual: {released}"
-            ));
-            if !released {
-                st.fail(
-                    "notifications: the GPU stack was not released after the badge went away"
-                        .into(),
-                );
             }
         }
         Act::CalSetup => {
