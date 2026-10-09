@@ -1053,6 +1053,20 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
                     }
                     None => st.say("probe album art: GetPixel unavailable on this session".into()),
                 }
+                let strip = a
+                    .list
+                    .hits
+                    .iter()
+                    .filter(|h| compose::strip_page(h.id).is_some())
+                    .count();
+                if a.cfg.appearance.page_icons && strip != a.host.page_ids().len() {
+                    st.fail(format!(
+                        "page strip: {strip} clickable icon(s) for {} pages",
+                        a.host.page_ids().len()
+                    ));
+                } else {
+                    st.say(format!("page strip: {strip} clickable icon(s)"));
+                }
                 st.say(format!(
                     "image cache: {} image(s), {} KiB; GPU bitmaps uploaded: {}",
                     a.images.len(),

@@ -6,8 +6,9 @@
 //! also fades and scales in slightly (0.94 → 1) driven by the `content` spring — that is the "content
 //! follows the shape" half of the stagger.
 
-use crate::draw::{Canvas, DrawCmd, DrawList, ImageId};
+use crate::draw::{Canvas, CursorKind, DrawCmd, DrawList, HitId, ImageId};
 use crate::geom::{Rect, Size, Vec2};
+use crate::icons::Icon;
 use crate::shell::{ContentKind, ShellFrame};
 use crate::theme::Theme;
 
@@ -18,6 +19,10 @@ pub trait Content {
     fn draw_chips(&mut self, cv: &mut Canvas, area: Rect);
     /// Number of pages (for the indicator dots).
     fn page_count(&self) -> usize;
+    /// The icon for the page strip (`None`: the page is shown as a dot).
+    fn page_icon(&self, _page: usize) -> Option<Icon> {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -30,6 +35,8 @@ pub struct Metrics {
     pub pad_bottom: f32,
     /// Draw a faint hairline around the notch.
     pub outline: bool,
+    /// Page strip of clickable icons instead of dots.
+    pub page_icons: bool,
 }
 
 impl Default for Metrics {
@@ -40,6 +47,7 @@ impl Default for Metrics {
             pad_top: 14.0,
             pad_bottom: 26.0,
             outline: true,
+            page_icons: true,
         }
     }
 }
@@ -55,6 +63,35 @@ pub fn content_rect(frame_y: f32, nominal: Size, window_w: f32, m: &Metrics) -> 
         (nominal.w - 2.0 * pad_x).max(0.0),
         (nominal.h - m.pad_top - m.pad_bottom).max(0.0),
     )
+}
+
+/// Hit ids `STRIP_HIT + page` are the page strip's icons (modules number theirs from 0).
+pub const STRIP_HIT: u32 = 0xFFFF_0000;
+
+/// The page the strip icon `id` stands for.
+pub fn strip_page(id: HitId) -> Option<usize> {
+    id.0.checked_sub(STRIP_HIT).map(|p| p as usize)
+}
+
+/// Clickable page icons along the bottom of the expanded shape; a page without an icon is a dot.
+pub fn draw_strip(cv: &mut Canvas, shape_rect: Rect, content: &dyn Content, active: usize) {
+    let count = content.page_count();
+    if count < 2 {
+        return;
+    }
+    let th = *cv.theme;
+    let (cell, size) = (22.0, 14.0);
+    let x0 = shape_rect.center().x - cell * count as f32 * 0.5;
+    let cy = shape_rect.bottom() - 13.0;
+    for k in 0..count {
+        let Some(icon) = content.page_icon(k) else {
+            continue;
+        };
+        let cell_r = Rect::new(x0 + k as f32 * cell, cy - cell * 0.5, cell, cell);
+        let color = if k == active { th.text } else { th.text_faint };
+        cv.icon(icon, cell_r.inset((cell - size) * 0.5), color);
+        cv.hit(cell_r, HitId(STRIP_HIT + k as u32), CursorKind::Hand);
+    }
 }
 
 /// Page indicator dots along the bottom of the expanded shape.
@@ -153,7 +190,11 @@ pub fn compose(
                         frame.content_size.w,
                         frame.content_size.h,
                     );
-                    draw_dots(&mut cv, nominal, content.page_count(), frame.page);
+                    if m.page_icons && content.page_icon(0).is_some() {
+                        draw_strip(&mut cv, nominal, content, frame.page);
+                    } else {
+                        draw_dots(&mut cv, nominal, content.page_count(), frame.page);
+                    }
                     cv.pop_group();
                 }
             }
@@ -391,6 +432,45 @@ mod tests {
         let mut s = Shell::new(ShellConfig::default());
         s.set_pages(demo::page_sizes());
         s
+    }
+
+    #[test]
+    fn strip_icons_are_hit_regions_that_name_their_page() {
+        struct Icons;
+        impl Content for Icons {
+            fn draw_page(&mut self, _: usize, _: &mut Canvas, _: Rect) {}
+            fn draw_peek(&mut self, _: u32, _: &mut Canvas, _: Rect) {}
+            fn draw_chips(&mut self, _: &mut Canvas, _: Rect) {}
+            fn page_count(&self) -> usize {
+                3
+            }
+            fn page_icon(&self, _: usize) -> Option<Icon> {
+                Some(Icon::Play)
+            }
+        }
+        let th = Theme::default();
+        let mut list = DrawList::new();
+        let shape = Rect::new(0.0, 0.0, 400.0, 200.0);
+        draw_strip(&mut Canvas::new(&mut list, &th), shape, &Icons, 1);
+        assert_eq!(list.hits.len(), 3);
+        for k in 0..3 {
+            let h = list.hit_test(list.hits[k].rect.center()).unwrap();
+            assert_eq!(strip_page(h.id), Some(k));
+        }
+        assert_eq!(strip_page(HitId(7)), None);
+        // One page: nothing to switch to.
+        list.clear();
+        struct One;
+        impl Content for One {
+            fn draw_page(&mut self, _: usize, _: &mut Canvas, _: Rect) {}
+            fn draw_peek(&mut self, _: u32, _: &mut Canvas, _: Rect) {}
+            fn draw_chips(&mut self, _: &mut Canvas, _: Rect) {}
+            fn page_count(&self) -> usize {
+                1
+            }
+        }
+        draw_strip(&mut Canvas::new(&mut list, &th), shape, &One, 0);
+        assert!(list.hits.is_empty());
     }
 
     #[test]

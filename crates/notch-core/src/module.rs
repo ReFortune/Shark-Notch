@@ -956,6 +956,11 @@ impl Content for ModuleHost {
     fn page_count(&self) -> usize {
         self.page_indices().len()
     }
+
+    fn page_icon(&self, page: usize) -> Option<Icon> {
+        let &i = self.page_indices().get(page)?;
+        Some(self.entries[i].module.icon())
+    }
 }
 
 impl ModuleHost {

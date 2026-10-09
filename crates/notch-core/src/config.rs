@@ -135,6 +135,8 @@ pub struct Appearance {
     /// Concave "ears" where the notch meets the screen edge (Notch style only).
     pub ears: bool,
     pub ear_size: f32,
+    /// Clickable page icons along the bottom (false: plain dots).
+    pub page_icons: bool,
     /// Extra UI scale on top of Windows' DPI scaling.
     pub scale: f32,
     /// The window (and its swap chain) is sized once for this panel size, so pages never force a
@@ -156,6 +158,7 @@ impl Default for Appearance {
             corner_smoothing: 0.6,
             ears: true,
             ear_size: 12.0,
+            page_icons: true,
             scale: 1.0,
             max_panel_width: 460.0,
             max_panel_height: 340.0,
@@ -1088,6 +1091,7 @@ corner_radius = 26.0
 corner_smoothing = 0.6         # 0 = circular, 1 = fully continuous
 ears = true                    # concave fillets where the notch meets the screen edge
 ear_size = 12.0
+page_icons = true              # clickable page icons along the bottom (false: plain dots)
 scale = 1.0                    # extra UI scale on top of Windows' DPI scaling
 max_panel_width = 460.0        # the window is sized once for this; larger module pages are clipped
 max_panel_height = 340.0

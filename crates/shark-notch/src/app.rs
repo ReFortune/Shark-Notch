@@ -249,6 +249,7 @@ fn make_metrics(cfg: &Config, theme: &Theme) -> Metrics {
     Metrics {
         ear_inset: if ears { cfg.appearance.ear_size } else { 0.0 },
         outline: theme.dark,
+        page_icons: cfg.appearance.page_icons,
         ..Metrics::default()
     }
 }
@@ -1102,6 +1103,13 @@ impl App {
     /// A press and release on the same region: tell the module that owns the page.
     fn on_click(&mut self, id: HitId) {
         debug!("click on region {}", id.0);
+        if let Some(page) = compose::strip_page(id) {
+            if self.shell.presence() == Presence::Expanded && page < self.shell.page_count() {
+                self.shell.set_page(clock::now(), page);
+                self.kick("switch");
+            }
+            return;
+        }
         self.module_input(Input::Click(self.cursor));
     }
 
