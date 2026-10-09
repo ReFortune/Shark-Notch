@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::aiusage::Totals;
-use crate::claudelimits::{LimitsState, fmt_until};
+use crate::claudelimits::{LimitsState, Window, fmt_until, fmt_until_short};
 use crate::color::Color;
 use crate::config::{Config, StatsCfg};
 use crate::draw::{Align, Canvas, Text, TextStyle, Weight};
@@ -67,6 +67,8 @@ pub struct Stats {
     limits: Option<Arc<LimitsState>>,
     /// Per window (5 hours, week): the level already announced (0, 80 %, 95 %) and its reset time.
     warned: [(u8, i64); 2],
+    /// Polls since the limits were last asked for (while this page is open).
+    limits_polls: u32,
     suspended: bool,
 }
 
@@ -97,6 +99,7 @@ impl Stats {
             ai: None,
             limits: None,
             warned: [(0, 0); 2],
+            limits_polls: 0,
             suspended: false,
         }
     }
@@ -232,11 +235,7 @@ impl Stats {
 
     /// Height the optional strips (Bluetooth devices, Claude Code) add to the page.
     fn extra_height(&self) -> f32 {
-        if self.cfg.devices {
-            BATTERY_H + GAP
-        } else {
-            0.0
-        }
+        (BATTERY_H + GAP) * (usize::from(self.cfg.devices) + usize::from(self.cfg.ai_limits)) as f32
     }
 
     /// How long Claude Code counts as "working" after its logs last grew.
@@ -282,6 +281,80 @@ impl Stats {
         cv.bar(
             Rect::new(x, area.bottom() - 8.0, w, 5.0),
             used / 100.0,
+            th.surface_hi,
+            color,
+        );
+    }
+
+    /// The Claude line on this page: the 5-hour and weekly limits as two bars, or why not.
+    fn draw_ai(&self, cv: &mut Canvas, r: Rect, unix: i64) {
+        let th = *cv.theme;
+        cv.squircle(r, 10.0, th.surface);
+        cv.text(
+            Rect::new(r.x + 12.0, r.y, 86.0, r.h),
+            "Claude Code",
+            TextStyle::new(11.5, Weight::SemiBold),
+            th.text_dim,
+        );
+        let body = Rect::new(r.x + 100.0, r.y, r.w - 110.0, r.h);
+        let note = |cv: &mut Canvas, text: &'static str| {
+            cv.text(body, text, TextStyle::caption(), th.text_faint);
+        };
+        match self.limits.as_deref() {
+            Some(LimitsState::Known(l)) => {
+                let w = body.w * 0.5;
+                for (i, (label, win)) in [("5 h", l.five_hour), ("Week", l.seven_day)]
+                    .into_iter()
+                    .enumerate()
+                {
+                    self.draw_window(
+                        cv,
+                        Rect::new(body.x + i as f32 * w, r.y, w - 8.0, r.h),
+                        label,
+                        win,
+                        unix,
+                    );
+                }
+            }
+            Some(LimitsState::SignedOut) => note(cv, "Sign in to Claude Code to see limits"),
+            Some(LimitsState::Expired) => note(cv, "Login expired: use Claude Code once"),
+            Some(LimitsState::Failed) => note(cv, "Limits unavailable right now"),
+            None => note(cv, "…"),
+        }
+    }
+
+    /// One limit: "5 h 42% · 2h10m" with a bar under it.
+    fn draw_window(&self, cv: &mut Canvas, r: Rect, label: &str, win: Option<Window>, unix: i64) {
+        let th = *cv.theme;
+        let Some(w) = win else {
+            cv.text(
+                Rect::new(r.x, r.y + 2.0, r.w, 16.0),
+                format!("{label} —"),
+                TextStyle::caption(),
+                th.text_faint,
+            );
+            return;
+        };
+        let color = if w.used >= 90.0 {
+            th.danger
+        } else if w.used >= 70.0 {
+            th.warn
+        } else {
+            th.accent
+        };
+        let mut text = format!("{label} {:.0}%", w.used);
+        if w.resets_at > 0 {
+            text.push_str(&format!(" · {}", fmt_until_short(w.resets_at, unix)));
+        }
+        cv.text(
+            Rect::new(r.x, r.y + 3.0, r.w, 15.0),
+            text,
+            TextStyle::caption().tabular(),
+            th.text,
+        );
+        cv.bar(
+            Rect::new(r.x, r.bottom() - 8.0, r.w, 4.0),
+            w.used / 100.0,
             th.surface_hi,
             color,
         );
@@ -496,6 +569,13 @@ impl Module for Stats {
     }
 
     fn on_poll(&mut self, cx: &mut Cx) {
+        // Claude's limits: asked for when the page opens and then about once a minute.
+        if self.cfg.ai_limits {
+            if self.limits_polls.is_multiple_of(60) {
+                cx.command(Command::ClaudeLimits);
+            }
+            self.limits_polls += 1;
+        }
         cx.command(Command::Stats(StatsCmd::Sample {
             gpu: self.cfg.gpu,
             devices: self.cfg.devices,
@@ -539,6 +619,7 @@ impl Module for Stats {
     }
 
     fn on_visibility(&mut self, _v: Visibility, _cx: &mut Cx) {
+        self.limits_polls = 0;
         // Opening starts a fresh minute; closing drops the old one.
         self.forget();
     }
@@ -548,7 +629,7 @@ impl Module for Stats {
         cx.request_redraw();
     }
 
-    fn draw_expanded(&mut self, cv: &mut Canvas, area: Rect, _dx: &DrawCx) {
+    fn draw_expanded(&mut self, cv: &mut Canvas, area: Rect, dx: &DrawCx) {
         let th = *cv.theme;
         let tile_w = (area.w - GAP) * 0.5;
         let tile_h = ((area.h - BATTERY_H - self.extra_height() - 2.0 * GAP) * 0.5).max(40.0);
@@ -659,6 +740,10 @@ impl Module for Stats {
                 Rect::new(area.x, y, area.w, BATTERY_H),
                 snap.as_ref().and_then(|s| s.devices.as_deref()),
             );
+        }
+        if self.cfg.ai_limits {
+            y -= BATTERY_H + GAP;
+            self.draw_ai(cv, Rect::new(area.x, y, area.w, BATTERY_H), dx.env.unix);
         }
     }
 }
@@ -1234,5 +1319,65 @@ mod tests {
         let ev = Event::new(crate::events::Source::Local, EventKind::Suspended(true));
         let mut cx = cx!(t);
         t.m.on_event(&ev, &mut cx);
+    }
+
+    #[test]
+    fn the_claude_line_is_on_this_page_only_when_the_limits_are_switched_on() {
+        let mut t = T::new();
+        t.feed(T::snap(Some(10.0)));
+        assert!(
+            !t.texts().contains(&"Claude Code".to_string()),
+            "off by default"
+        );
+        let base = t.m.expanded_size().h;
+        t.m.cfg.ai_limits = true;
+        t.m.cfg.devices = false;
+        assert_eq!(t.m.expanded_size().h, 232.0 + 38.0);
+        t.env.unix = 1_000;
+        let tx0 = t.texts();
+        assert!(tx0.contains(&"…".to_string()), "nothing read yet: {tx0:?}");
+        limits_event(&mut t, known(42.4, 93.0, 1_000 + 2 * 3600 + 600, 0));
+        let tx = t.texts();
+        assert!(tx.contains(&"Claude Code".to_string()), "{tx:?}");
+        assert!(tx.contains(&"5 h 42% · 2h10m".to_string()), "{tx:?}");
+        assert!(tx.contains(&"Week 93%".to_string()), "{tx:?}");
+        for (state, want) in [
+            (LimitsState::SignedOut, "Sign in to Claude Code"),
+            (LimitsState::Expired, "Login expired"),
+            (LimitsState::Failed, "unavailable"),
+        ] {
+            limits_event(&mut t, state);
+            assert!(t.texts().iter().any(|s| s.contains(want)), "{want}");
+        }
+        assert!(base >= 232.0);
+    }
+
+    #[test]
+    fn the_limits_are_asked_for_when_the_page_opens_and_then_once_a_minute() {
+        let mut t = T::new();
+        t.m.cfg.ai_limits = true;
+        let mut asks = 0;
+        for i in 0..=121 {
+            let mut cx = cx!(t);
+            t.m.on_poll(&mut cx);
+            asks += t
+                .out
+                .commands
+                .iter()
+                .filter(|c| **c == Command::ClaudeLimits)
+                .count();
+            t.out.commands.clear();
+            if i == 60 {
+                // Closing and reopening the page asks again at once.
+                let mut cx = cx!(t);
+                t.m.on_visibility(Visibility::Collapsed, &mut cx);
+            }
+        }
+        assert_eq!(asks, 4, "polls 0 and 60, then 61 and 121");
+        // Off: never.
+        t.m.cfg.ai_limits = false;
+        let mut cx = cx!(t);
+        t.m.on_poll(&mut cx);
+        assert!(!t.out.commands.contains(&Command::ClaudeLimits));
     }
 }

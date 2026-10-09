@@ -133,6 +133,17 @@ pub fn fmt_until(at: i64, now: i64) -> String {
     }
 }
 
+/// The same, as short as it goes: "2h10m", "45m", "3d2h".
+pub fn fmt_until_short(at: i64, now: i64) -> String {
+    let mins = (at - now).max(0) / 60;
+    match (mins / 60, mins % 60) {
+        (0, m) => format!("{m}m"),
+        (h, 0) if h < 48 => format!("{h}h"),
+        (h, m) if h < 48 => format!("{h}h{m:02}m"),
+        (h, _) => format!("{}d{}h", h / 24, h % 24),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,5 +222,14 @@ mod tests {
             assert_eq!(fmt_until(1_000 + secs, 1_000), s, "{secs}");
         }
         assert_eq!(fmt_until(5, 1_000), "now", "already past");
+        for (secs, s) in [
+            (0, "0m"),
+            (45 * 60, "45m"),
+            (7800, "2h10m"),
+            (3600, "1h"),
+            (3 * 86_400 + 7200, "3d2h"),
+        ] {
+            assert_eq!(fmt_until_short(1_000 + secs, 1_000), s, "{secs}");
+        }
     }
 }
