@@ -293,6 +293,9 @@ pub enum EventKind {
     DownloadDone(DownloadDone),
     /// A reading of the system's vital signs (answer to `StatsCmd::Sample`).
     Stats(Arc<StatsSnapshot>),
+    /// The PC's power source or battery level changed (sent by Windows' power notifications, not
+    /// by polling).
+    Power(PowerStatus),
     /// The command centre's controls, as read (answer to `ControlCmd::Refresh` and to changes).
     Control(Arc<ControlState>),
     /// The state of the iPhone link.
@@ -322,13 +325,14 @@ pub enum Kind {
     Downloads,
     DownloadDone,
     Stats,
+    Power,
     Control,
     PhoneLink,
     Inbound,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 20] = [
+    pub const ALL: [Kind; 21] = [
         Kind::ConfigChanged,
         Kind::ThemeChanged,
         Kind::Suspended,
@@ -346,6 +350,7 @@ impl Kind {
         Kind::Downloads,
         Kind::DownloadDone,
         Kind::Stats,
+        Kind::Power,
         Kind::Control,
         Kind::PhoneLink,
         Kind::Inbound,
@@ -372,6 +377,7 @@ impl EventKind {
             EventKind::Downloads(_) => Kind::Downloads,
             EventKind::DownloadDone(_) => Kind::DownloadDone,
             EventKind::Stats(_) => Kind::Stats,
+            EventKind::Power(_) => Kind::Power,
             EventKind::Control(_) => Kind::Control,
             EventKind::PhoneLink(_) => Kind::PhoneLink,
             EventKind::Inbound(_) => Kind::Inbound,
@@ -484,6 +490,15 @@ mod tests {
                 net: None,
                 power: None,
             })),
+            EventKind::Power(PowerStatus {
+                battery: BatteryInfo {
+                    percent: 50,
+                    charging: false,
+                },
+                plugged: false,
+                secs_left: None,
+                saver: false,
+            }),
         ]
     }
 

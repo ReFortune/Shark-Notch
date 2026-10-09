@@ -206,7 +206,7 @@ fn net_counters() -> Option<NetCounters> {
     Some(total)
 }
 
-fn power() -> Option<notch_core::events::PowerStatus> {
+pub fn power() -> Option<notch_core::events::PowerStatus> {
     let mut s = SYSTEM_POWER_STATUS::default();
     unsafe { GetSystemPowerStatus(&mut s) }.ok()?;
     power_from_raw(

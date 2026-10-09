@@ -38,6 +38,7 @@ about 250 ms after the page does. Later readings answer at once.
 | GPU | The "GPU Engine" performance counters (PDH), summed over processes per engine; the **busiest engine** is shown, as Task Manager's headline figure does | Needs Windows 10 1709+ and a WDDM 2.x driver. Some machines (and virtual machines) have no such counters: the tile then says "No GPU counters on this PC". The counters cost a little more than the rest, hence `gpu = false`. |
 | Network | `GetIfTable2` byte counters summed over the **physical adapters that are up** | VPN, Hyper-V and WSL adapters carry the same bytes again and are left out. Wi-Fi and Ethernet together if both are up. The chart scale never drops below 128 KB/s so background noise does not look like traffic. |
 | Battery | `GetSystemPowerStatus` | "left" is Windows' own estimate; a PC without a battery says so. Shows "saver on" when battery saver is. |
+| Charger banner | `RegisterPowerSettingNotification` (power source and battery level), delivered to the app window | A banner when the charger is plugged in or removed and when the battery reaches 100 % on the charger. Event-driven: nothing is read between events. The first notification Windows sends is only the baseline. Never over a fullscreen app. `[stats] battery_hud = false` turns it off. Needs a battery to ever fire; not tested on a real one. |
 
 Nothing needs elevation, a driver or an install; nothing is written anywhere.
 

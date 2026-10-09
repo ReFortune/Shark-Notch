@@ -23,11 +23,21 @@ const GAP: f32 = 8.0;
 const BATTERY_H: f32 = 30.0;
 /// The network chart never zooms in on background noise: its scale is at least this (bytes/s).
 const NET_FLOOR: f32 = 128.0 * 1024.0;
+/// How long the plug-in / full-charge banner stays.
+const BANNER_SECS: f64 = 3.0;
 
 pub fn create(cfg: &Config) -> Option<Box<dyn Module>> {
     cfg.stats
         .enabled
         .then(|| Box::new(Stats::new(cfg.stats.clone())) as Box<dyn Module>)
+}
+
+/// What the short banner announces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Banner {
+    Plugged(PowerStatus),
+    Unplugged(PowerStatus),
+    Full(PowerStatus),
 }
 
 pub struct Stats {
@@ -38,6 +48,10 @@ pub struct Stats {
     down: History,
     up: History,
     latest: Option<Arc<StatsSnapshot>>,
+    /// The last power reading Windows announced (the baseline for the plug-in / full banners).
+    power: Option<PowerStatus>,
+    banner: Option<Banner>,
+    suspended: bool,
 }
 
 /// What a tile shows besides its chart.
@@ -62,6 +76,35 @@ impl Stats {
             down: History::new(SLOTS),
             up: History::new(SLOTS),
             latest: None,
+            power: None,
+            banner: None,
+            suspended: false,
+        }
+    }
+
+    /// Windows announced a new power source or level: say so when the charger came or went, or the
+    /// battery just reached full. The first announcement (Windows sends the current state when the
+    /// notification is registered) is only the baseline.
+    fn on_power(&mut self, p: PowerStatus, cx: &mut Cx) {
+        let before = self.power.replace(p);
+        let Some(before) = before.filter(|_| self.cfg.battery_hud && !self.suspended) else {
+            return;
+        };
+        let banner = if p.plugged != before.plugged {
+            Some(if p.plugged {
+                Banner::Plugged(p)
+            } else {
+                Banner::Unplugged(p)
+            })
+        } else if p.plugged && p.battery.percent >= 100 && before.battery.percent < 100 {
+            Some(Banner::Full(p))
+        } else {
+            None
+        };
+        if let Some(b) = banner {
+            self.banner = Some(b);
+            cx.peek(BANNER_SECS);
+            cx.request_redraw();
         }
     }
 
@@ -215,7 +258,7 @@ impl Module for Stats {
     }
 
     fn subscriptions(&self) -> EventMask {
-        EventMask::of(&[Kind::Stats])
+        EventMask::of(&[Kind::Stats, Kind::Power, Kind::Suspended])
     }
 
     /// Honoured only while the page is on screen: this is the only thing that ever measures.
@@ -229,27 +272,79 @@ impl Module for Stats {
         Size::new(424.0, 232.0)
     }
 
+    fn peek_size(&self) -> Option<Size> {
+        Some(Size::new(296.0, 64.0))
+    }
+
+    fn draw_peek(&mut self, cv: &mut Canvas, area: Rect, _dx: &DrawCx) {
+        let th = *cv.theme;
+        let Some(b) = self.banner else { return };
+        let (title, p) = match b {
+            Banner::Plugged(p) => ("Charger connected", p),
+            Banner::Unplugged(p) => ("On battery", p),
+            Banner::Full(p) => ("Fully charged", p),
+        };
+        let color = match b {
+            Banner::Unplugged(_) if p.battery.percent <= 20 => th.warn,
+            _ => th.ok,
+        };
+        let tile = Rect::new(area.x, area.y, area.h, area.h);
+        cv.squircle(tile, 8.0, th.surface_hi);
+        cv.icon(Icon::Bolt, tile.inset(tile.w * 0.22), color);
+        let x = tile.right() + 12.0;
+        let w = (area.right() - x).max(0.0);
+        cv.text(
+            Rect::new(x, area.y + 2.0, w, 18.0),
+            title,
+            TextStyle::new(13.5, Weight::SemiBold),
+            th.text,
+        );
+        let sub = match (b, p.secs_left) {
+            (Banner::Unplugged(_), Some(s)) => {
+                format!("{}% · {} left", p.battery.percent, fmt_remaining(s))
+            }
+            _ => format!("{}%", p.battery.percent),
+        };
+        cv.text(
+            Rect::new(x, area.y + 21.0, w - 40.0, 15.0),
+            sub,
+            TextStyle::caption(),
+            th.text_dim,
+        );
+        cv.bar(
+            Rect::new(x, area.bottom() - 8.0, w, 5.0),
+            f32::from(p.battery.percent) / 100.0,
+            th.surface_hi,
+            color,
+        );
+    }
+
     fn on_poll(&mut self, cx: &mut Cx) {
         cx.command(Command::Stats(StatsCmd::Sample { gpu: self.cfg.gpu }));
     }
 
     fn on_event(&mut self, ev: &Event, cx: &mut Cx) {
-        if let EventKind::Stats(s) = &ev.kind {
-            if let Some(c) = s.cpu {
-                self.cpu.push(c);
+        match &ev.kind {
+            EventKind::Stats(s) => {
+                if let Some(c) = s.cpu {
+                    self.cpu.push(c);
+                }
+                if let Some(m) = Self::mem_percent(s) {
+                    self.mem.push(m);
+                }
+                if let Some(g) = s.gpu {
+                    self.gpu.push(g);
+                }
+                if let Some((d, u)) = s.net {
+                    self.down.push(d as f32);
+                    self.up.push(u as f32);
+                }
+                self.latest = Some(s.clone());
+                cx.request_redraw();
             }
-            if let Some(m) = Self::mem_percent(s) {
-                self.mem.push(m);
-            }
-            if let Some(g) = s.gpu {
-                self.gpu.push(g);
-            }
-            if let Some((d, u)) = s.net {
-                self.down.push(d as f32);
-                self.up.push(u as f32);
-            }
-            self.latest = Some(s.clone());
-            cx.request_redraw();
+            EventKind::Power(p) => self.on_power(*p, cx),
+            EventKind::Suspended(on) => self.suspended = *on,
+            _ => {}
         }
     }
 
@@ -638,5 +733,114 @@ mod tests {
             "stats never takes room on the pill"
         );
         assert_eq!(host.next_deadline(), None, "hidden: nothing is scheduled");
+    }
+
+    fn texts(l: &DrawList) -> Vec<String> {
+        l.cmds
+            .iter()
+            .filter_map(|c| match c {
+                DrawCmd::Text { text, .. } => Some(text.as_str().to_string()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn reading(percent: u8, plugged: bool) -> PowerStatus {
+        PowerStatus {
+            battery: BatteryInfo {
+                percent,
+                charging: plugged && percent < 100,
+            },
+            plugged,
+            secs_left: (!plugged).then_some(5400),
+            saver: false,
+        }
+    }
+
+    /// Feed power readings; returns the peek requests each one made.
+    fn feed_power(m: &mut Stats, readings: &[PowerStatus]) -> Vec<usize> {
+        let (env, theme, cfg) = (Env::default(), Theme::default(), Config::default());
+        let mut out = Out::default();
+        readings
+            .iter()
+            .map(|p| {
+                let mut cx = Cx::for_test(0.0, &env, &theme, &cfg, &mut out);
+                m.on_event(
+                    &Event::new(crate::events::Source::Local, EventKind::Power(*p)),
+                    &mut cx,
+                );
+                std::mem::take(&mut out.shell).len()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn plugging_in_unplugging_and_reaching_full_each_show_one_banner() {
+        let mut m = Stats::new(StatsCfg::default());
+        let peeks = feed_power(
+            &mut m,
+            &[
+                reading(80, false),  // the baseline Windows sends on registration
+                reading(80, true),   // plugged in
+                reading(81, true),   // just charging
+                reading(100, true),  // full
+                reading(100, true),  // nothing new
+                reading(100, false), // unplugged
+            ],
+        );
+        assert_eq!(peeks, vec![0, 1, 0, 1, 0, 1]);
+    }
+
+    #[test]
+    fn the_banner_names_the_event_and_the_battery() {
+        let mut m = Stats::new(StatsCfg::default());
+        feed_power(&mut m, &[reading(40, false), reading(40, true)]);
+        let th = Theme::default();
+        let mut list = DrawList::new();
+        let env = Env::default();
+        let cfg = Config::default();
+        m.draw_peek(
+            &mut Canvas::new(&mut list, &th),
+            Rect::new(0.0, 0.0, 296.0, 44.0),
+            &DrawCx {
+                now: 0.0,
+                env: &env,
+                config: &cfg,
+            },
+        );
+        let tx = texts(&list);
+        assert!(tx.contains(&"Charger connected".to_string()), "{tx:?}");
+        assert!(tx.contains(&"40%".to_string()), "{tx:?}");
+        feed_power(&mut m, &[reading(40, false)]);
+        let mut list = DrawList::new();
+        m.draw_peek(
+            &mut Canvas::new(&mut list, &th),
+            Rect::new(0.0, 0.0, 296.0, 44.0),
+            &DrawCx {
+                now: 0.0,
+                env: &env,
+                config: &cfg,
+            },
+        );
+        assert!(texts(&list).contains(&"40% · 1 h 30 min left".to_string()));
+    }
+
+    #[test]
+    fn no_banner_while_a_game_is_in_front_or_when_switched_off() {
+        let (env, theme, cfg) = (Env::default(), Theme::default(), Config::default());
+        let mut out = Out::default();
+        let mut m = Stats::new(StatsCfg::default());
+        let mut send = |m: &mut Stats, kind: EventKind| {
+            let mut cx = Cx::for_test(0.0, &env, &theme, &cfg, &mut out);
+            m.on_event(&Event::new(crate::events::Source::Local, kind), &mut cx);
+            std::mem::take(&mut out.shell).len()
+        };
+        send(&mut m, EventKind::Power(reading(50, false)));
+        send(&mut m, EventKind::Suspended(true));
+        assert_eq!(send(&mut m, EventKind::Power(reading(50, true))), 0);
+        send(&mut m, EventKind::Suspended(false));
+        assert_eq!(send(&mut m, EventKind::Power(reading(50, false))), 1);
+        m.cfg.battery_hud = false;
+        assert_eq!(send(&mut m, EventKind::Power(reading(50, true))), 0);
     }
 }

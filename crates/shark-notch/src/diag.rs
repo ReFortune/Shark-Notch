@@ -352,6 +352,8 @@ enum Act {
     SwPage,
     SwClick,
     SwCheck,
+    PowerFeed,
+    PowerCheck,
     FinalRelease,
     FinalMemory,
     Report,
@@ -498,9 +500,11 @@ const SCRIPT: &[(f64, Act)] = &[
     (122.0, Act::SwPage),
     (123.0, Act::SwClick),
     (124.6, Act::SwCheck),
-    (125.0, Act::FinalRelease),
-    (126.6, Act::FinalMemory),
-    (127.0, Act::Report),
+    (124.8, Act::PowerFeed),
+    (125.6, Act::PowerCheck),
+    (126.4, Act::FinalRelease),
+    (128.0, Act::FinalMemory),
+    (128.4, Act::Report),
 ];
 
 const CLIP_TEXT: &str = "Selftest clipboard text";
@@ -2584,6 +2588,35 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
                 st.fail("stopwatch: it did not count after the click".into());
             }
             click_region(a, 6); // pause it again
+        }
+        Act::PowerFeed => {
+            // What Windows' power notifications would send: the state at registration (the
+            // baseline), then the charger being plugged in.
+            a.collapse(true);
+            let reading = |plugged: bool| notch_core::events::PowerStatus {
+                battery: notch_core::events::BatteryInfo {
+                    percent: 64,
+                    charging: plugged,
+                },
+                plugged,
+                secs_left: None,
+                saver: false,
+            };
+            a.bus_tx
+                .send(Source::Local, EventKind::Power(reading(false)));
+            a.bus_tx
+                .send(Source::Local, EventKind::Power(reading(true)));
+        }
+        Act::PowerCheck => {
+            let text = drawn_text(a);
+            let said = text.iter().any(|t| t == "Charger connected");
+            st.say(format!(
+                "battery banner: plugging in while collapsed showed a banner: {said} (presence {:?})",
+                a.shell.presence()
+            ));
+            if a.cfg.stats.battery_hud && !(said && a.shell.presence() == Presence::Peek) {
+                st.fail("battery banner: plugging in showed no banner".into());
+            }
         }
         Act::FinalRelease => {
             // Every page has been opened and every module exercised by now. Close it all and let

@@ -1732,6 +1732,18 @@ impl App {
         }
     }
 
+    /// Windows said the power source or the battery level changed: hand the new state to the stats
+    /// module (which turns a plug-in or a full charge into a short banner). Nothing is read when
+    /// nobody would use it.
+    pub(crate) fn on_power_change(&mut self) {
+        if !self.cfg.module_active("stats") || !self.cfg.stats.battery_hud {
+            return;
+        }
+        if let Some(p) = crate::services::stats::power() {
+            self.bus_tx.send(Source::Local, EventKind::Power(p));
+        }
+    }
+
     fn on_display_state(&mut self, on: bool) {
         if self.display_off == on {
             self.display_off = !on;
@@ -2214,10 +2226,12 @@ unsafe extern "system" fn ctrl_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM
                     LRESULT(0)
                 }
                 session::WM_POWERBROADCAST => {
-                    if wp.0 == session::PBT_POWERSETTINGCHANGE
-                        && let Some(on) = unsafe { session::display_state_from(lp.0) }
-                    {
-                        a.on_display_state(on);
+                    if wp.0 == session::PBT_POWERSETTINGCHANGE {
+                        match unsafe { session::power_setting_from(lp.0) } {
+                            Some(session::PowerSetting::Display(on)) => a.on_display_state(on),
+                            Some(session::PowerSetting::Battery) => a.on_power_change(),
+                            None => {}
+                        }
                     }
                     LRESULT(1)
                 }

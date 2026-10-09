@@ -491,6 +491,8 @@ pub struct StatsCfg {
     pub gpu: bool,
     /// Show network speeds in bits per second (Mbps) instead of bytes (MB/s).
     pub net_bits: bool,
+    /// A short banner when the charger is plugged in or removed and when the battery is full.
+    pub battery_hud: bool,
 }
 
 impl Default for StatsCfg {
@@ -500,6 +502,7 @@ impl Default for StatsCfg {
             interval_secs: 1.0,
             gpu: true,
             net_bits: false,
+            battery_hud: true,
         }
     }
 }
@@ -1204,6 +1207,7 @@ enabled = true
 interval_secs = 1.0            # between readings while the page is on screen; nothing is read while it is not
 gpu = true                     # read the GPU utilisation counters too (the dearest reading); off hides the GPU tile
 net_bits = false               # network speeds in Mbps instead of MB/s
+battery_hud = true              # a short banner when the charger is plugged in or removed, and when the battery is full
 
 [control]
 enabled = true                 # volume, brightness, Wi-Fi, Bluetooth, a snip button and Focus; see docs/CONTROL.md
