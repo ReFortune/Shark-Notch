@@ -1255,6 +1255,11 @@ impl App {
                 self.services.command(&c);
             }
             Command::OpenConfig => self.open_config(),
+            Command::KeepAwake(on) => {
+                if !sys::set_keep_awake(on) {
+                    warn!("keep awake: Windows refused the request");
+                }
+            }
             Command::SetBool {
                 section,
                 key,
@@ -1855,6 +1860,9 @@ impl App {
             if let Some(p) = problems.first() {
                 self.set_status(p.clone());
             }
+        }
+        if !new.module_active("control") {
+            sys::set_keep_awake(false); // the tile is gone, so its request must be too
         }
         if old.general.autostart != new.general.autostart
             && let Err(e) = autostart::set(new.general.autostart)

@@ -38,6 +38,7 @@ Each control below says what it uses and where it will not work.
 | **Wi-Fi**, **Bluetooth** | `Windows.Devices.Radios`. Access is requested when the page first reads the radios, and asked again at every reading while it is not allowed (and after the worker's idle release), so granting it in Settings takes effect without a restart. | No such adapter: "No adapter". Windows' *Let apps control your radios* privacy setting (or a policy) refusing: "Not allowed", and a click opens that setting. A radio switched off by a hardware switch, airplane mode or Device Manager: "Disabled", and a click opens Windows' airplane-mode settings. Switching Wi-Fi off cuts the connection you may be using — including a remote session. |
 | **Focus** | `SHQueryUserNotificationState`: **reads** whether Windows is in quiet time. The tile **opens Windows' Focus settings** (`ms-settings:quietmomentshome`). | See below: it cannot *change* Focus. |
 | **Snip** | Opens Windows' screen-snip overlay (`ms-screenclip:`: Snipping Tool, or Snip & Sketch on older Windows 10). | The notch captures nothing itself; the snip tool does everything and shows what it captured in its own way. |
+| **Keep awake** | While on, Windows does not go to sleep and the screen stays on (`SetThreadExecutionState`); a cup chip sits on the pill while it is on. | Off at every start and when the app quits; `[control] keep_awake = false` removes the tile. The request belongs to the UI thread and is dropped if the module is switched off. |
 
 ## Focus / do not disturb: read-only, on purpose
 

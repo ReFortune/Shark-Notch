@@ -64,13 +64,15 @@ pub enum Icon {
     Sun,
     /// Corner brackets: a screen snip.
     Snip,
+    /// A cup with steam: keep awake.
+    Cup,
     /// A cog: settings.
     Gear,
 }
 
 impl Icon {
     /// Every icon, for tests and the preview tool.
-    pub const ALL: [Icon; 38] = [
+    pub const ALL: [Icon; 39] = [
         Icon::Play,
         Icon::Pause,
         Icon::Next,
@@ -109,6 +111,7 @@ impl Icon {
         Icon::Sun,
         Icon::Snip,
         Icon::Gear,
+        Icon::Cup,
     ];
 }
 
@@ -546,6 +549,31 @@ pub fn ops(icon: Icon) -> Vec<IconOp> {
             }
             v
         }
+        Icon::Cup => vec![
+            Stroke(
+                polyline(
+                    &[
+                        (5.0, 10.0),
+                        (5.0, 15.0),
+                        (8.0, 19.0),
+                        (14.0, 19.0),
+                        (17.0, 15.0),
+                        (17.0, 10.0),
+                    ],
+                    true,
+                ),
+                2.0,
+            ),
+            Stroke(
+                polyline(
+                    &[(17.0, 11.0), (20.0, 11.0), (20.0, 14.5), (16.5, 14.5)],
+                    false,
+                ),
+                2.0,
+            ),
+            Stroke(polyline(&[(9.0, 3.5), (9.0, 6.5)], false), 2.0),
+            Stroke(polyline(&[(13.0, 3.5), (13.0, 6.5)], false), 2.0),
+        ],
         Icon::Gear => {
             let mut v = vec![
                 Stroke(circle_path(12.0, 12.0, 3.2), 2.0),

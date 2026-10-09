@@ -29,6 +29,7 @@ const HIT_SNIP: HitId = HitId(4);
 const HIT_MUTE: HitId = HitId(5);
 const HIT_VOLUME: HitId = HitId(6);
 const HIT_BRIGHTNESS: HitId = HitId(7);
+const HIT_AWAKE: HitId = HitId(8);
 
 const GAP: f32 = 8.0;
 const TILE_H: f32 = 64.0;
@@ -67,6 +68,7 @@ struct Layout {
     bluetooth: Rect,
     focus: Rect,
     snip: Rect,
+    awake: Rect,
     mute: Rect,
     volume: Rect,
     volume_label: Rect,
@@ -79,7 +81,7 @@ impl Layout {
     fn new(area: Rect) -> Layout {
         let tw = (area.w - 3.0 * GAP) / 4.0;
         let tile = |i: f32| Rect::new(area.x + i * (tw + GAP), area.y, tw, TILE_H);
-        let row = |i: f32| area.y + TILE_H + GAP + 4.0 + i * (ROW_H + GAP);
+        let row = |i: f32| area.y + 2.0 * (TILE_H + GAP) + 4.0 + i * (ROW_H + GAP);
         let slider = |y: f32| {
             Rect::new(
                 area.x + 44.0,
@@ -95,6 +97,7 @@ impl Layout {
             bluetooth: tile(1.0),
             focus: tile(2.0),
             snip: tile(3.0),
+            awake: Rect::new(area.x, area.y + TILE_H + GAP, tw, TILE_H),
             mute: Rect::new(area.x + 2.0, vy + (ROW_H - 32.0) * 0.5, 32.0, 32.0),
             volume: slider(vy),
             volume_label: label(vy),
@@ -133,6 +136,8 @@ pub struct Control {
     wifi: Option<(bool, f64)>,
     bluetooth: Option<(bool, f64)>,
     lay: Option<Rect>,
+    /// Keep Awake is on (the tile and the chip). Not reset when the page closes: it outlives it.
+    awake: bool,
 }
 
 impl Control {
@@ -149,6 +154,7 @@ impl Control {
             wifi: None,
             bluetooth: None,
             lay: None,
+            awake: false,
         }
     }
 
@@ -443,8 +449,25 @@ impl Module for Control {
         ))
     }
 
+    fn chip_width(&self) -> Option<f32> {
+        self.awake.then_some(26.0)
+    }
+
+    fn chip_priority(&self) -> i32 {
+        30
+    }
+
+    fn draw_chip(&mut self, cv: &mut Canvas, area: Rect, _dx: &DrawCx) {
+        let c = area.center();
+        cv.icon(
+            Icon::Cup,
+            Rect::new(c.x - 8.0, c.y - 8.0, 16.0, 16.0),
+            cv.theme.accent,
+        );
+    }
+
     fn expanded_size(&self) -> Size {
-        Size::new(424.0, 198.0)
+        Size::new(424.0, 198.0 + TILE_H + GAP)
     }
 
     fn on_poll(&mut self, cx: &mut Cx) {
@@ -474,6 +497,10 @@ impl Module for Control {
 
     fn on_config(&mut self, cfg: &Config, cx: &mut Cx) {
         self.cfg = cfg.control.clone();
+        if self.awake && !self.cfg.keep_awake {
+            self.awake = false;
+            cx.command(Command::KeepAwake(false));
+        }
         cx.request_redraw();
     }
 
@@ -530,6 +557,12 @@ impl Module for Control {
                     Some(HIT_BLUETOOTH) => self.click_radio(RadioKind::Bluetooth, cx),
                     Some(HIT_FOCUS) => {
                         cx.command(Command::Control(ControlCmd::OpenFocusSettings));
+                        true
+                    }
+                    Some(HIT_AWAKE) => {
+                        self.awake = !self.awake;
+                        cx.command(Command::KeepAwake(self.awake));
+                        cx.request_redraw();
                         true
                     }
                     Some(HIT_SNIP) => {
@@ -591,6 +624,24 @@ impl Module for Control {
                 look: TileLook::Off,
             },
         );
+
+        if self.cfg.keep_awake {
+            self.draw_tile(
+                cv,
+                lay.awake,
+                TileSpec {
+                    id: HIT_AWAKE,
+                    icon: Icon::Cup,
+                    label: "Keep awake",
+                    sub: Text::Static(if self.awake { "On" } else { "Off" }),
+                    look: if self.awake {
+                        TileLook::On
+                    } else {
+                        TileLook::Off
+                    },
+                },
+            );
+        }
 
         // Volume
         let muted = self.muted(now);
@@ -1114,5 +1165,49 @@ mod tests {
         assert_eq!(host.pages().len(), 1);
         assert_eq!(host.chips_width(), 0.0);
         assert_eq!(host.next_deadline(), None, "hidden: nothing is scheduled");
+    }
+
+    #[test]
+    fn keep_awake_toggles_survives_the_page_closing_and_shows_a_chip() {
+        let mut t = T::new();
+        assert_eq!(t.m.chip_width(), None);
+        assert!(t.click(HIT_AWAKE));
+        assert_eq!(t.commands(), vec![Command::KeepAwake(true)]);
+        assert!(t.m.chip_width().is_some());
+        // The page closing resets the readings, not this: the PC is still being kept awake.
+        let mut cx = cx!(t);
+        t.m.on_visibility(Visibility::Hidden, &mut cx);
+        assert!(t.m.chip_width().is_some());
+        let mut list = DrawList::new();
+        let mut cv = Canvas::new(&mut list, &t.theme);
+        let dx = DrawCx {
+            now: t.now,
+            env: &t.env,
+            config: &t.cfg,
+        };
+        t.m.draw_chip(&mut cv, Rect::new(0.0, 0.0, 26.0, 20.0), &dx);
+        assert!(list.cmds.iter().any(|c| matches!(
+            c,
+            DrawCmd::Icon {
+                icon: Icon::Cup,
+                ..
+            }
+        )));
+        assert!(t.click(HIT_AWAKE));
+        assert_eq!(t.commands(), vec![Command::KeepAwake(false)]);
+        assert_eq!(t.m.chip_width(), None);
+    }
+
+    #[test]
+    fn switching_the_tile_off_in_the_config_lets_the_pc_sleep_again() {
+        let mut t = T::new();
+        t.click(HIT_AWAKE);
+        t.commands();
+        let mut cfg = Config::default();
+        cfg.control.keep_awake = false;
+        let mut cx = cx!(t);
+        t.m.on_config(&cfg, &mut cx);
+        assert_eq!(t.commands(), vec![Command::KeepAwake(false)]);
+        assert!(!t.texts().contains(&"Keep awake".to_string()));
     }
 }

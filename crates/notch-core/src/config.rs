@@ -508,6 +508,9 @@ pub struct ControlCfg {
     /// Seconds between readings of the controls while the page is on screen (so a volume key
     /// pressed elsewhere shows up); nothing is read while it is not.
     pub interval_secs: f32,
+    /// A "Keep awake" tile (and a chip while it is on) that stops Windows sleeping and the screen
+    /// turning off. It is off at every start.
+    pub keep_awake: bool,
 }
 
 impl Default for ControlCfg {
@@ -515,6 +518,7 @@ impl Default for ControlCfg {
         Self {
             enabled: true,
             interval_secs: 1.0,
+            keep_awake: true,
         }
     }
 }
@@ -1197,6 +1201,7 @@ net_bits = false               # network speeds in Mbps instead of MB/s
 [control]
 enabled = true                 # volume, brightness, Wi-Fi, Bluetooth, a snip button and Focus; see docs/CONTROL.md
 interval_secs = 1.0            # between readings while the page is on screen; nothing is read while it is not
+keep_awake = true              # a Keep awake tile; while it is on the PC does not sleep and the screen stays on (off at every start)
 
 [phone]
 enabled = true                 # false: the link can never run, whatever `listen` says

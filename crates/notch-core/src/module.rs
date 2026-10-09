@@ -154,6 +154,8 @@ pub enum Command {
     Stats(StatsCmd),
     Control(ControlCmd),
     Phone(PhoneCmd),
+    /// Stop Windows sleeping and the screen turning off (`true`), or let it again.
+    KeepAwake(bool),
     /// Write one boolean into `config.toml` (the file reload applies it).
     SetBool {
         section: &'static str,

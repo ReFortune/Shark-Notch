@@ -346,6 +346,9 @@ enum Act {
     SettingsPage,
     SettingsClick,
     SettingsCheck,
+    AwakePage,
+    AwakeClick,
+    AwakeCheck,
     FinalRelease,
     FinalMemory,
     Report,
@@ -486,9 +489,12 @@ const SCRIPT: &[(f64, Act)] = &[
     (118.6, Act::SettingsPage),
     (119.6, Act::SettingsClick),
     (120.0, Act::SettingsCheck),
-    (120.2, Act::FinalRelease),
-    (121.8, Act::FinalMemory),
-    (122.2, Act::Report),
+    (120.3, Act::AwakePage),
+    (121.3, Act::AwakeClick),
+    (121.6, Act::AwakeCheck),
+    (122.0, Act::FinalRelease),
+    (123.6, Act::FinalMemory),
+    (124.0, Act::Report),
 ];
 
 const CLIP_TEXT: &str = "Selftest clipboard text";
@@ -2500,6 +2506,39 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
                 st.fail("settings: the click did not turn clock.enabled off in the file".into());
             }
             a.write_bool("clock", "enabled", true);
+        }
+        Act::AwakePage => match a.host.page_of("control") {
+            Some(p) => {
+                a.shell.set_page(now, p);
+                a.expand(Trigger::Hotkey);
+            }
+            None => st.fail("the controls page is not in the ring".into()),
+        },
+        Act::AwakeClick => {
+            if !click_region(a, 8) {
+                st.fail("keep awake: the controls page has no Keep awake tile to click".into());
+            }
+        }
+        Act::AwakeCheck => {
+            let on = sys::keep_awake_active();
+            let chip = a.host.chip_owners().contains(&"control");
+            st.say(format!(
+                "keep awake: after a click the thread's execution state asks for the system to stay on: {on}; the pill carries its chip: {chip}"
+            ));
+            if !on || !chip {
+                st.fail("keep awake: the click did not take effect".into());
+            }
+            click_region(a, 8);
+            let (off, chip) = (
+                !sys::keep_awake_active(),
+                !a.host.chip_owners().contains(&"control"),
+            );
+            st.say(format!(
+                "keep awake: a second click lets the PC sleep again: {off}; the chip is gone: {chip}"
+            ));
+            if !off || !chip {
+                st.fail("keep awake: the second click did not release the request".into());
+            }
         }
         Act::FinalRelease => {
             // Every page has been opened and every module exercised by now. Close it all and let

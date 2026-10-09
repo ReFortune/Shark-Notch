@@ -351,6 +351,7 @@ impl Services {
             Command::OpenUrl(_)
             | Command::OpenConfig
             | Command::SetBool { .. }
+            | Command::KeepAwake(_)
             | Command::Chime
             | Command::Reveal(_) => false,
         }

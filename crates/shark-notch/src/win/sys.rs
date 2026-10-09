@@ -13,6 +13,10 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::Memory::{
     GetProcessHeap, HEAP_FLAGS, HEAP_SUMMARY, HeapCompact, HeapSummary,
 };
+use windows::Win32::System::Power::{
+    ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED, EXECUTION_STATE,
+    SetThreadExecutionState,
+};
 use windows::Win32::System::ProcessStatus::{
     GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX2,
 };
@@ -305,4 +309,25 @@ pub fn system_24h() -> bool {
 
 pub fn mib(bytes: u64) -> f64 {
     bytes as f64 / (1024.0 * 1024.0)
+}
+/// Stop Windows sleeping and the screen turning off (`on`), or let it again. The request belongs to
+/// the calling thread, so it must come from one that lives as long as the request (the UI thread);
+/// Windows drops it when that thread ends. Returns whether the call was accepted.
+pub fn set_keep_awake(on: bool) -> bool {
+    let flags = if on {
+        ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+    } else {
+        ES_CONTINUOUS
+    };
+    unsafe { SetThreadExecutionState(flags) }.0 != 0
+}
+
+/// Is this thread's keep-awake request in force? (It reads it by setting it again, which returns the
+/// previous value, then puts back what it found.)
+pub fn keep_awake_active() -> bool {
+    let probe = ES_CONTINUOUS | ES_SYSTEM_REQUIRED;
+    let prev = unsafe { SetThreadExecutionState(probe) };
+    let on = prev.0 & ES_SYSTEM_REQUIRED.0 != 0;
+    unsafe { SetThreadExecutionState(ES_CONTINUOUS | EXECUTION_STATE(prev.0 & !ES_CONTINUOUS.0)) };
+    on
 }
