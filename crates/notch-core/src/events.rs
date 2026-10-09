@@ -118,6 +118,14 @@ pub struct PowerStatus {
     pub saver: bool,
 }
 
+/// A Bluetooth device that is connected now, with its battery level when Windows has one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BtDevice {
+    pub name: Arc<str>,
+    /// 0..=100.
+    pub battery: Option<u8>,
+}
+
 /// One reading of the machine's vital signs. A field is `None` when it could not be measured (the
 /// first reading has no CPU percentage yet; a PC without a GPU counter has no GPU figure).
 #[derive(Clone, Debug, PartialEq)]
@@ -132,6 +140,8 @@ pub struct StatsSnapshot {
     pub net: Option<(f64, f64)>,
     /// `None`: this PC has no battery.
     pub power: Option<PowerStatus>,
+    /// Connected Bluetooth devices (`None`: not asked for, or Windows could not say).
+    pub devices: Option<Vec<BtDevice>>,
 }
 
 /// A radio (Wi-Fi, Bluetooth) as the command centre sees it.
@@ -489,6 +499,7 @@ mod tests {
                 gpu: None,
                 net: None,
                 power: None,
+                devices: None,
             })),
             EventKind::Power(PowerStatus {
                 battery: BatteryInfo {

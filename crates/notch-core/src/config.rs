@@ -493,6 +493,9 @@ pub struct StatsCfg {
     pub net_bits: bool,
     /// A short banner when the charger is plugged in or removed and when the battery is full.
     pub battery_hud: bool,
+    /// A strip with the connected Bluetooth devices and their batteries (read every few seconds
+    /// while the page is on screen).
+    pub devices: bool,
 }
 
 impl Default for StatsCfg {
@@ -503,6 +506,7 @@ impl Default for StatsCfg {
             gpu: true,
             net_bits: false,
             battery_hud: true,
+            devices: true,
         }
     }
 }
@@ -1208,6 +1212,7 @@ interval_secs = 1.0            # between readings while the page is on screen; n
 gpu = true                     # read the GPU utilisation counters too (the dearest reading); off hides the GPU tile
 net_bits = false               # network speeds in Mbps instead of MB/s
 battery_hud = true              # a short banner when the charger is plugged in or removed, and when the battery is full
+devices = true                  # a strip with connected Bluetooth devices and their batteries (read while the page is open)
 
 [control]
 enabled = true                 # volume, brightness, Wi-Fi, Bluetooth, a snip button and Focus; see docs/CONTROL.md

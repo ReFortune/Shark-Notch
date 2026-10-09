@@ -21,6 +21,8 @@ windows = { workspace = true, features = [
     "Foundation_Collections",
     "Media_Control",
     "Storage_Streams",
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Devices_Properties",
     "Win32_Foundation",
     "Win32_Globalization",
     "Win32_Graphics_Direct2D",

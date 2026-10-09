@@ -499,6 +499,16 @@ fn modules_sheet(out: &str, theme: Theme) {
                     secs_left: Some(3 * 3600 + 14 * 60),
                     saver: false,
                 }),
+                devices: Some(vec![
+                    notch_core::events::BtDevice {
+                        name: "AirPods Pro".into(),
+                        battery: Some(74),
+                    },
+                    notch_core::events::BtDevice {
+                        name: "iPhone".into(),
+                        battery: Some(18),
+                    },
+                ]),
             })),
         )
     };

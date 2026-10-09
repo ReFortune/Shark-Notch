@@ -15,6 +15,7 @@ use notch_core::module::{Command, ControlCmd, PhoneCmd};
 use crate::win::dragdrop::ShelfSlot;
 
 pub mod audio;
+pub mod btdev;
 pub mod calendar;
 pub mod clipboard;
 pub mod control;

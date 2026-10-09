@@ -84,8 +84,9 @@ pub enum CalCmd {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StatsCmd {
     /// Take a reading now (the answer arrives as a `Stats` event). Sent only while the stats page
-    /// is on screen; with `gpu` the GPU counters are read too.
-    Sample { gpu: bool },
+    /// is on screen; with `gpu` the GPU counters are read too, with `devices` the connected
+    /// Bluetooth devices (every few seconds at most).
+    Sample { gpu: bool, devices: bool },
 }
 
 /// Which radio a toggle is for.

@@ -2608,6 +2608,16 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
                 .send(Source::Local, EventKind::Power(reading(true)));
         }
         Act::PowerCheck => {
+            // Whatever Bluetooth devices this machine has connected, read the way the stats page does.
+            let devices = crate::services::btdev::connected();
+            st.say(format!(
+                "bluetooth: {} connected device(s): {:?}",
+                devices.len(),
+                devices
+                    .iter()
+                    .map(|d| format!("{} {:?}", d.name, d.battery))
+                    .collect::<Vec<_>>()
+            ));
             let text = drawn_text(a);
             let said = text.iter().any(|t| t == "Charger connected");
             st.say(format!(

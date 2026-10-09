@@ -25,7 +25,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use notch_core::bus::BusSender;
-use notch_core::events::{EventKind, Source, StatsSnapshot};
+use notch_core::events::{BtDevice, EventKind, Source, StatsSnapshot};
 use notch_core::module::StatsCmd;
 use notch_core::stats::{
     CpuTimes, NetCounters, cpu_percent, gpu_percent, net_rate, power_from_raw,
@@ -51,9 +51,11 @@ const FRESH: Duration = Duration::from_secs(3);
 const BASELINE_WAIT: Duration = Duration::from_millis(250);
 /// After this long without a request the open GPU query and the last reading are released.
 const RELEASE_AFTER: Duration = Duration::from_secs(5);
+/// Bluetooth devices (and their batteries) are read again after this long.
+const DEVICES_EVERY: Duration = Duration::from_secs(8);
 
 enum Req {
-    Sample { gpu: bool },
+    Sample { gpu: bool, devices: bool },
     Quit,
 }
 
@@ -85,8 +87,8 @@ impl StatsService {
     }
 
     pub fn command(&self, cmd: StatsCmd) {
-        let StatsCmd::Sample { gpu } = cmd;
-        let _ = self.tx.send(Req::Sample { gpu });
+        let StatsCmd::Sample { gpu, devices } = cmd;
+        let _ = self.tx.send(Req::Sample { gpu, devices });
     }
 
     pub fn stop(mut self) {
@@ -124,14 +126,21 @@ fn run(rx: &Receiver<Req>, bus: &BusSender) {
                 Err(_) => return,
             }
         };
-        let Req::Sample { mut gpu } = first else {
+        let Req::Sample {
+            mut gpu,
+            mut devices,
+        } = first
+        else {
             return;
         };
         // Requests that piled up while a reading was being taken are one request.
         while let Ok(more) = rx.try_recv() {
             match more {
                 Req::Quit => return,
-                Req::Sample { gpu: g } => gpu = g,
+                Req::Sample { gpu: g, devices: d } => {
+                    gpu = g;
+                    devices = d;
+                }
             }
         }
         // The pause of a baseline reading is spent in `recv_timeout`, so quitting stays prompt.
@@ -140,7 +149,7 @@ fn run(rx: &Receiver<Req>, bus: &BusSender) {
             Ok(Req::Sample { .. }) => true,
             Ok(Req::Quit) | Err(RecvTimeoutError::Disconnected) => false,
         };
-        let Some(snapshot) = sampler.sample(gpu, &mut wait) else {
+        let Some(snapshot) = sampler.sample(gpu, devices, &mut wait) else {
             return;
         };
         bus.send(Source::Local, EventKind::Stats(Arc::new(snapshot)));
@@ -317,6 +326,8 @@ impl Reading {
 struct Sampler {
     last: Option<Reading>,
     gpu: Option<GpuQuery>,
+    /// The Bluetooth devices as last read, and when (they change slowly and cost a few ms).
+    devices: Option<(Instant, Vec<BtDevice>)>,
 }
 
 impl Sampler {
@@ -325,8 +336,21 @@ impl Sampler {
     }
 
     fn release(&mut self) {
+        self.devices = None;
         self.last = None;
         self.gpu = None;
+    }
+
+    /// The connected Bluetooth devices, read again when the last reading is a few seconds old.
+    fn devices(&mut self) -> Vec<BtDevice> {
+        match &self.devices {
+            Some((at, list)) if at.elapsed() < DEVICES_EVERY => list.clone(),
+            _ => {
+                let list = super::btdev::connected();
+                self.devices = Some((Instant::now(), list.clone()));
+                list
+            }
+        }
     }
 
     /// One snapshot. `wait` pauses for a baseline reading and returns `false` if the service is
@@ -334,6 +358,7 @@ impl Sampler {
     fn sample(
         &mut self,
         want_gpu: bool,
+        want_devices: bool,
         wait: &mut dyn FnMut(Duration) -> bool,
     ) -> Option<StatsSnapshot> {
         let fresh = self.last.as_ref().is_some_and(|l| l.at.elapsed() < FRESH);
@@ -385,6 +410,7 @@ impl Sampler {
             gpu,
             net,
             power: power(),
+            devices: want_devices.then(|| self.devices()),
         })
     }
 }
@@ -448,7 +474,10 @@ mod tests {
         bus.drain(&mut got);
         assert!(got.is_empty(), "the sampler never speaks unprompted");
 
-        svc.command(StatsCmd::Sample { gpu: true });
+        svc.command(StatsCmd::Sample {
+            gpu: true,
+            devices: false,
+        });
         let until = Instant::now() + Duration::from_secs(10);
         let mut snap = None;
         while Instant::now() < until && snap.is_none() {
@@ -472,7 +501,10 @@ mod tests {
 
         // A second request while the page stays open answers without the baseline pause.
         let t = Instant::now();
-        svc.command(StatsCmd::Sample { gpu: false });
+        svc.command(StatsCmd::Sample {
+            gpu: false,
+            devices: false,
+        });
         let mut second = None;
         while t.elapsed() < Duration::from_secs(5) && second.is_none() {
             bus.drain(&mut got);
@@ -504,20 +536,25 @@ mod tests {
     fn a_sampler_lets_go_of_what_it_holds_when_released() {
         let mut sampler = Sampler::default();
         assert!(!sampler.holds_resources());
-        let snap = sampler.sample(true, &mut |_| true).expect("a snapshot");
+        let snap = sampler
+            .sample(true, false, &mut |_| true)
+            .expect("a snapshot");
         assert!(snap.mem_total > 0);
         assert!(sampler.holds_resources());
         sampler.release();
         assert!(!sampler.holds_resources() && sampler.gpu.is_none());
         // And it starts a fresh session afterwards.
-        assert!(sampler.sample(false, &mut |_| true).is_some());
+        assert!(sampler.sample(false, false, &mut |_| true).is_some());
     }
 
     #[test]
     fn stopping_during_a_baseline_pause_is_prompt() {
         let (_bus, tx) = Bus::new(Arc::new(NoWake));
         let svc = StatsService::start(tx).expect("starts");
-        svc.command(StatsCmd::Sample { gpu: false });
+        svc.command(StatsCmd::Sample {
+            gpu: false,
+            devices: false,
+        });
         std::thread::sleep(Duration::from_millis(40)); // inside the 250 ms pause
         let t = Instant::now();
         svc.stop();

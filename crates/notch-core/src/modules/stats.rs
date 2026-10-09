@@ -11,7 +11,7 @@ use std::time::Duration;
 use crate::color::Color;
 use crate::config::{Config, StatsCfg};
 use crate::draw::{Align, Canvas, Text, TextStyle, Weight};
-use crate::events::{Event, EventKind, EventMask, Kind, PowerStatus, StatsSnapshot};
+use crate::events::{BtDevice, Event, EventKind, EventMask, Kind, PowerStatus, StatsSnapshot};
 use crate::geom::{Rect, Size};
 use crate::icons::Icon;
 use crate::module::{Command, Cx, DrawCx, Module, ModuleId, StatsCmd, Visibility};
@@ -21,6 +21,8 @@ use crate::stats::{History, fmt_memory, fmt_rate, fmt_remaining};
 const SLOTS: usize = 60;
 const GAP: f32 = 8.0;
 const BATTERY_H: f32 = 30.0;
+/// Bluetooth devices named in the strip (the rest are left out).
+const MAX_DEVICES: usize = 3;
 /// The network chart never zooms in on background noise: its scale is at least this (bytes/s).
 const NET_FLOOR: f32 = 128.0 * 1024.0;
 /// How long the plug-in / full-charge banner stays.
@@ -169,6 +171,62 @@ impl Stats {
         }
     }
 
+    /// Height the Bluetooth devices strip adds to the page (0 when it is switched off).
+    fn devices_extra(&self) -> f32 {
+        if self.cfg.devices {
+            BATTERY_H + GAP
+        } else {
+            0.0
+        }
+    }
+
+    fn draw_devices(&self, cv: &mut Canvas, r: Rect, devices: Option<&[BtDevice]>) {
+        let th = *cv.theme;
+        cv.squircle(r, 10.0, th.surface);
+        cv.text(
+            Rect::new(r.x + 12.0, r.y, 58.0, r.h),
+            "Devices",
+            TextStyle::new(11.5, Weight::SemiBold),
+            th.text_dim,
+        );
+        let list = devices.unwrap_or_default();
+        if list.is_empty() {
+            let note = if devices.is_some() {
+                "No Bluetooth device connected"
+            } else {
+                "…"
+            };
+            cv.text(
+                Rect::new(r.x + 70.0, r.y, r.w - 82.0, r.h),
+                note,
+                TextStyle::caption(),
+                th.text_faint,
+            );
+            return;
+        }
+        let shown = &list[..list.len().min(MAX_DEVICES)];
+        let w = (r.w - 70.0 - 8.0) / shown.len() as f32;
+        for (i, d) in shown.iter().enumerate() {
+            let x = r.x + 70.0 + i as f32 * w;
+            let name: String = if d.name.chars().count() > 13 {
+                d.name.chars().take(12).chain(['…']).collect()
+            } else {
+                d.name.to_string()
+            };
+            let text = match d.battery {
+                Some(p) => format!("{name} {p}%"),
+                None => name,
+            };
+            let low = d.battery.is_some_and(|p| p <= 20);
+            cv.text(
+                Rect::new(x, r.y, w - 4.0, r.h),
+                text,
+                TextStyle::caption(),
+                if low { th.warn } else { th.text_dim },
+            );
+        }
+    }
+
     fn draw_battery(&self, cv: &mut Canvas, r: Rect, power: Option<&PowerStatus>, have_data: bool) {
         let th = *cv.theme;
         cv.squircle(r, 10.0, th.surface);
@@ -269,7 +327,7 @@ impl Module for Stats {
     }
 
     fn expanded_size(&self) -> Size {
-        Size::new(424.0, 232.0)
+        Size::new(424.0, 232.0 + self.devices_extra())
     }
 
     fn peek_size(&self) -> Option<Size> {
@@ -320,7 +378,10 @@ impl Module for Stats {
     }
 
     fn on_poll(&mut self, cx: &mut Cx) {
-        cx.command(Command::Stats(StatsCmd::Sample { gpu: self.cfg.gpu }));
+        cx.command(Command::Stats(StatsCmd::Sample {
+            gpu: self.cfg.gpu,
+            devices: self.cfg.devices,
+        }));
     }
 
     fn on_event(&mut self, ev: &Event, cx: &mut Cx) {
@@ -361,7 +422,7 @@ impl Module for Stats {
     fn draw_expanded(&mut self, cv: &mut Canvas, area: Rect, _dx: &DrawCx) {
         let th = *cv.theme;
         let tile_w = (area.w - GAP) * 0.5;
-        let tile_h = ((area.h - BATTERY_H - 2.0 * GAP) * 0.5).max(40.0);
+        let tile_h = ((area.h - BATTERY_H - self.devices_extra() - 2.0 * GAP) * 0.5).max(40.0);
         let at = |col: f32, row: f32| {
             Rect::new(
                 area.x + col * (tile_w + GAP),
@@ -454,6 +515,15 @@ impl Module for Stats {
             Some((self.up.values(), th.ok)),
         );
 
+        if self.cfg.devices {
+            let strip = Rect::new(
+                area.x,
+                area.bottom() - BATTERY_H - GAP - BATTERY_H,
+                area.w,
+                BATTERY_H,
+            );
+            self.draw_devices(cv, strip, snap.as_ref().and_then(|s| s.devices.as_deref()));
+        }
         // Battery
         let strip = Rect::new(area.x, area.bottom() - BATTERY_H, area.w, BATTERY_H);
         self.draw_battery(
@@ -523,6 +593,16 @@ mod tests {
                 gpu: Some(12.0),
                 net: Some((4.2 * 1024.0 * 1024.0, 120.0 * 1024.0)),
                 power: Some(power(82, false, false, Some(3 * 3600 + 12 * 60), false)),
+                devices: Some(vec![
+                    BtDevice {
+                        name: "AirPods Pro".into(),
+                        battery: Some(74),
+                    },
+                    BtDevice {
+                        name: "Keyboard".into(),
+                        battery: None,
+                    },
+                ]),
             }
         }
 
@@ -541,7 +621,7 @@ mod tests {
                 config: &self.cfg,
             };
             self.m
-                .draw_expanded(&mut cv, Rect::new(0.0, 0.0, 372.0, 188.0), &dx);
+                .draw_expanded(&mut cv, Rect::new(0.0, 0.0, 372.0, 226.0), &dx);
             assert!(list.is_balanced());
             list.cmds
                 .iter()
@@ -561,7 +641,7 @@ mod tests {
                 config: &self.cfg,
             };
             self.m
-                .draw_expanded(&mut cv, Rect::new(0.0, 0.0, 372.0, 188.0), &dx);
+                .draw_expanded(&mut cv, Rect::new(0.0, 0.0, 372.0, 226.0), &dx);
             list.cmds
                 .iter()
                 .filter(|c| matches!(c, DrawCmd::Shape { .. }))
@@ -579,7 +659,10 @@ mod tests {
         }
         assert_eq!(
             t.out.commands,
-            vec![Command::Stats(StatsCmd::Sample { gpu: true })]
+            vec![Command::Stats(StatsCmd::Sample {
+                gpu: true,
+                devices: true
+            })]
         );
         t.m.cfg.gpu = false;
         t.out = Out::default();
@@ -589,7 +672,10 @@ mod tests {
         }
         assert_eq!(
             t.out.commands,
-            vec![Command::Stats(StatsCmd::Sample { gpu: false })]
+            vec![Command::Stats(StatsCmd::Sample {
+                gpu: false,
+                devices: true
+            })]
         );
         // The interval comes from the configuration and is kept sane.
         t.m.cfg.interval_secs = 2.5;
@@ -842,5 +928,52 @@ mod tests {
         assert_eq!(send(&mut m, EventKind::Power(reading(50, false))), 1);
         m.cfg.battery_hud = false;
         assert_eq!(send(&mut m, EventKind::Power(reading(50, true))), 0);
+    }
+
+    #[test]
+    fn the_devices_strip_lists_connected_devices_with_batteries_and_can_be_switched_off() {
+        let mut t = T::new();
+        t.feed(T::snap(Some(10.0)));
+        let tx = t.texts();
+        assert!(tx.contains(&"Devices".to_string()), "{tx:?}");
+        assert!(tx.contains(&"AirPods Pro 74%".to_string()), "{tx:?}");
+        assert!(
+            tx.contains(&"Keyboard".to_string()),
+            "no figure, just the name: {tx:?}"
+        );
+        // A read with nobody connected says so; no read yet shows a placeholder.
+        let mut none = T::new();
+        let mut s = T::snap(Some(10.0));
+        s.devices = Some(Vec::new());
+        none.feed(s);
+        assert!(
+            none.texts()
+                .contains(&"No Bluetooth device connected".to_string())
+        );
+        // Switched off: no strip and a shorter page.
+        let mut off = T::new();
+        off.m.cfg.devices = false;
+        off.feed(T::snap(Some(10.0)));
+        assert!(!off.texts().contains(&"Devices".to_string()));
+        assert_eq!(off.m.expanded_size().h, 232.0);
+        assert_eq!(t.m.expanded_size().h, 232.0 + 38.0);
+    }
+
+    #[test]
+    fn the_poll_asks_for_devices_only_when_the_strip_is_on() {
+        let mut t = T::new();
+        for on in [true, false] {
+            t.m.cfg.devices = on;
+            let mut cx = cx!(t);
+            t.m.on_poll(&mut cx);
+            let last = t.out.commands.pop();
+            assert!(
+                matches!(
+                    last,
+                    Some(Command::Stats(StatsCmd::Sample { devices, .. })) if devices == on
+                ),
+                "{last:?}"
+            );
+        }
     }
 }
