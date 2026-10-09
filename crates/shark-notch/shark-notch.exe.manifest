@@ -1,14 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<!--
-  Application manifest embedded in shark-notch.exe (crates/shark-notch/build.rs).
-
-  The <msix> element is what lets Windows give the process a *package identity* when a matching
-  sparse package is registered (packaging/register-identity.ps1). Without that registration it does
-  nothing: the exe simply runs as an ordinary program. Windows requires an identity before it will
-  share other apps' notifications (see docs/NOTIFICATIONS.md).
-
-  publisher / packageName / applicationId must match packaging/AppxManifest.xml exactly.
--->
+<!-- Application manifest embedded in shark-notch.exe (build.rs). -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
@@ -33,8 +24,4 @@
       <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
     </application>
   </compatibility>
-  <msix xmlns="urn:schemas-microsoft-com:msix.v1"
-        publisher="CN=SharkNotch"
-        packageName="SharkNotch"
-        applicationId="App"/>
 </assembly>

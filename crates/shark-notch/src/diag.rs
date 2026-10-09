@@ -1398,18 +1398,17 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
         }
         Act::NotifAccess => {
             a.collapse(true);
-            // The exe must carry the manifest that lets a registered sparse package give it an identity.
             match embedded_manifest() {
-                Some(m) if m.contains("<msix") && m.contains("packageName=\"SharkNotch\"") => st
-                    .say("notifications: the exe embeds its application manifest with the sparse-package (<msix>) declaration".into()),
-                Some(_) => st.fail("notifications: the embedded application manifest lacks the <msix> sparse-package declaration".into()),
-                None => st.fail("notifications: the exe has no embedded application manifest (build.rs did not embed it)".into()),
-            }
-            match a.last_notif_access {
-                Some(acc) => st.say(format!(
-                    "notifications: the Windows listener reported {acc:?} (a plain unpackaged exe has no package identity, so NoIdentity is the expected answer here)"
-                )),
-                None => st.fail("notifications: the service never reported an access state".into()),
+                Some(m) if m.contains("SegmentHeap") => {
+                    st.say("the exe embeds its application manifest (segment heap)".into())
+                }
+                Some(_) => st.fail(
+                    "the embedded application manifest lacks the segment heap setting".into(),
+                ),
+                None => st.fail(
+                    "the exe has no embedded application manifest (build.rs did not embed it)"
+                        .into(),
+                ),
             }
         }
         Act::NotifFeed => {

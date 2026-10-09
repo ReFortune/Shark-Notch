@@ -139,8 +139,6 @@ pub struct App {
     pub(crate) bus_counts: [u32; Kind::ALL.len()],
     pub(crate) last_clip: Option<notch_core::events::ClipboardItem>,
     pub(crate) last_files: Option<Vec<notch_core::events::FileEntry>>,
-    /// The most recent `NotificationAccess` from the notifications service (self-test reads it).
-    pub(crate) last_notif_access: Option<notch_core::events::NotificationAccess>,
     /// The most recent state of the iPhone link (self-test reads it).
     pub(crate) last_phone_link: Option<Arc<notch_core::events::PhoneLink>>,
     /// The module that has the keyboard (a text field is being edited), the window that had the focus
@@ -392,7 +390,6 @@ impl App {
             bus_counts: [0; Kind::ALL.len()],
             last_clip: None,
             last_files: None,
-            last_notif_access: None,
             last_phone_link: None,
             kbd_owner: None,
             kbd_prev: None,
@@ -1252,7 +1249,6 @@ impl App {
             Command::Media(_)
             | Command::Clipboard(_)
             | Command::Shelf(_)
-            | Command::Notifications(_)
             | Command::Calendar(_)
             | Command::Stats(_)
             | Command::Store(_) => {
@@ -1366,7 +1362,6 @@ impl App {
             match &ev.kind {
                 EventKind::ClipboardItem(it) => self.last_clip = Some(it.clone()),
                 EventKind::FileDropped(f) => self.last_files = Some(f.clone()),
-                EventKind::NotificationAccess(a) => self.last_notif_access = Some(*a),
                 EventKind::PhoneLink(l) => self.last_phone_link = Some(l.clone()),
                 EventKind::Inbound(i) => self.route_inbound(i),
                 _ => {}

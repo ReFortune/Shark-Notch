@@ -22,7 +22,7 @@ use notch_core::demo;
 use notch_core::draw::{Canvas, DrawList, ImageId};
 use notch_core::events::{
     CalEvent, CalendarData, ClipKind, ClipboardItem, Event, EventKind, FileEntry, MediaSnapshot,
-    Notification, NotificationAccess, Source, StoreItem,
+    Notification, Source, StoreItem,
 };
 use notch_core::geom::{Rect, Vec2};
 use notch_core::module::{Env, ModuleHost};
@@ -335,10 +335,6 @@ fn modules_sheet(out: &str, theme: Theme) {
         )
     };
     host.dispatch(vec![
-        Event::new(
-            Source::Local,
-            EventKind::NotificationAccess(NotificationAccess::Granted),
-        ),
         note(
             1,
             "Outlook",

@@ -24,7 +24,7 @@ matter right now (a microphone in use, a timer, the next meeting, a download, yo
 | **Media** | Whatever Windows thinks is playing: art, title, seek bar, controls, level bars | |
 | **Clipboard** | History of text, links and images; pin; click to copy back; items from your iPhone are labelled | |
 | **Shelf** | Drop files on the notch (a drag toward the top opens it), drag them out again. It holds *references*: your files are never moved or deleted | |
-| **Notifications** | Windows toasts as banners and a list, a "missed" badge after a fullscreen session; banners your iPhone shortcuts send | [`docs/NOTIFICATIONS.md`](docs/NOTIFICATIONS.md) |
+| **Notifications** | Banners your iPhone shortcuts send, as a pop-up and a short list, with a "missed" badge after a fullscreen session. Windows' own notifications are not read (Windows allows that only to apps with package identity) | [`docs/IPHONE_SHORTCUTS.md`](docs/IPHONE_SHORTCUTS.md) |
 | **Calendar** | Your ICS feeds (Outlook, Google, iCloud): month grid, agenda, a **Join** button, a countdown chip | [`docs/CALENDAR_AND_FOCUS.md`](docs/CALENDAR_AND_FOCUS.md) |
 | **Focus** | Pomodoro timer with a task list | same |
 | **Live** | A chip while a program uses the microphone or camera, quick timers, browser downloads in progress | [`docs/LIVE.md`](docs/LIVE.md) |
@@ -197,7 +197,7 @@ Three tiers, and each claim in the docs says which one it is in:
 | 3 | Media (SMTC, album art, controls, seek, visualizer) | implemented — needs your hardware for the live SMTC check |
 | 4 | Clipboard history (text, links, images; pin; re-copy) | implemented |
 | 5 | File shelf (OLE drop target, drag out) | implemented — real drag-and-drop needs your hardware |
-| 6 | Windows notifications (banner, list, missed badge) | implemented — needs a one-off identity step and your hardware, see [`docs/NOTIFICATIONS.md`](docs/NOTIFICATIONS.md) |
+| 6 | Notifications (banner, list, missed badge) | implemented for the iPhone link only; reading Windows' own notifications was dropped (it needs a package identity and never worked here) |
 | 7 | Calendar (ICS feeds, month view, Join banner, countdown chip) + Pomodoro with tasks | implemented — real feeds and typing need your machine, see [`docs/CALENDAR_AND_FOCUS.md`](docs/CALENDAR_AND_FOCUS.md) |
 | 8 | Live activities (microphone/camera chip, quick timers, browser downloads with *Show in folder*) | implemented — the privacy chip and real browsers need your machine; copy progress is **not** feasible, see [`docs/LIVE.md`](docs/LIVE.md) |
 | 9 | System stats (CPU, memory, GPU, network, battery; read only while the page is open) | implemented — GPU counters and battery need your hardware, see [`docs/STATS.md`](docs/STATS.md) |

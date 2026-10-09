@@ -52,19 +52,6 @@ pub struct Notification {
     pub quiet: bool,
 }
 
-/// Whether Windows lets this process read its notifications.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum NotificationAccess {
-    /// Not asked yet / the listener is off.
-    #[default]
-    Unknown,
-    Granted,
-    /// The user (or policy) refused "Notification access".
-    Denied,
-    /// The process has no package identity, which Windows requires for this API (see docs).
-    NoIdentity,
-}
-
 /// One calendar event instance, with its times both as UTC instants and as the local wall clock.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CalEvent {
@@ -286,9 +273,6 @@ pub enum EventKind {
     /// A clipboard entry was dropped (evicted or deleted).
     ClipboardRemoved(u64),
     Notification(Notification),
-    /// A notification was dismissed (here or in Windows' notification centre).
-    NotificationRemoved(u64),
-    NotificationAccess(NotificationAccess),
     FileDropped(Vec<FileEntry>),
     /// Something is being dragged over the notch's drop target (`true`), or left / was dropped (`false`).
     DragHover(bool),
@@ -325,8 +309,6 @@ pub enum Kind {
     ClipboardItem,
     ClipboardRemoved,
     Notification,
-    NotificationRemoved,
-    NotificationAccess,
     FileDropped,
     DragHover,
     Battery,
@@ -344,15 +326,13 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub const ALL: [Kind; 22] = [
+    pub const ALL: [Kind; 20] = [
         Kind::ConfigChanged,
         Kind::ThemeChanged,
         Kind::Suspended,
         Kind::ClipboardItem,
         Kind::ClipboardRemoved,
         Kind::Notification,
-        Kind::NotificationRemoved,
-        Kind::NotificationAccess,
         Kind::FileDropped,
         Kind::DragHover,
         Kind::Battery,
@@ -379,8 +359,6 @@ impl EventKind {
             EventKind::ClipboardItem(_) => Kind::ClipboardItem,
             EventKind::ClipboardRemoved(_) => Kind::ClipboardRemoved,
             EventKind::Notification(_) => Kind::Notification,
-            EventKind::NotificationRemoved(_) => Kind::NotificationRemoved,
-            EventKind::NotificationAccess(_) => Kind::NotificationAccess,
             EventKind::FileDropped(_) => Kind::FileDropped,
             EventKind::DragHover(_) => Kind::DragHover,
             EventKind::Battery(_) => Kind::Battery,
@@ -463,8 +441,6 @@ mod tests {
                 ago_secs: 0,
                 quiet: false,
             }),
-            EventKind::NotificationRemoved(1),
-            EventKind::NotificationAccess(NotificationAccess::Granted),
             EventKind::FileDropped(vec![]),
             EventKind::DragHover(true),
             EventKind::Battery(BatteryInfo {

@@ -332,6 +332,15 @@ if the build deviated, it is here.
 
 **Done differently**
 
+
+* **Windows notifications (D5, phase 6) were removed again.** Reading other apps' toasts needs a
+  package identity, which never worked on the target machine, so the listener, the sparse-package
+  manifest and scripts (`packaging/`) and `docs/NOTIFICATIONS.md` are gone. The Notifications page
+  stays for the banners the iPhone link sends. The application manifest (segment heap) moved to
+  `crates/shark-notch/shark-notch.exe.manifest`.
+* **The iPhone page was removed.** The link, its `/notify` banners and the other endpoints stay; the
+  pairing token is in the tray menu. The phone's battery and Focus are still accepted and shown
+  nowhere.
 * **iPhone link (D9, phase 11).** It listens on **all IPv4 addresses** (`0.0.0.0`), not "only
   private-range interface addresses": who may talk to it is decided *per connection* (a private
   address, and by default one on the same network as one of the PC's own adapters; anything else is

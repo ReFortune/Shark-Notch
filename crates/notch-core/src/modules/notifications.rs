@@ -1,26 +1,24 @@
-//! Notifications: Windows toasts (and, from phase 11, banners an iPhone shortcut sends) as a short
-//! list, with a brief banner for each new one that then tucks away by itself.
+//! Notifications: the banners an iPhone shortcut sends, as a short list, with a brief banner for
+//! each new one that then tucks away by itself.
 //!
 //! * **Banner, then gone.** A fresh notification asks the shell for a peek of a few seconds; nothing
 //!   stays on screen and nothing needs a click. The list is a page you open when you want it.
 //! * **Never while a game is in front.** While the shell is suspended (fullscreen app, lock, pause)
 //!   notifications are *kept silently* and counted; when it comes back a collapsed-pill badge and a
 //!   short "while you were away" banner say how many you missed. Opening the page clears the badge.
-//! * **Honest about access.** Windows only lets a process with *package identity* read other apps'
-//!   notifications. The page says plainly when that is missing, and phone notifications keep working.
-//! * **Non-destructive.** Dismissing here hides the entry in the notch; whether it is also removed
-//!   from Windows' notification centre is the platform's decision (`notifications.dismiss_in_windows`).
+//! * **Only what you send.** Windows lets only a process with package identity read other apps'
+//!   notifications, which this app does not have, so nothing from Windows appears here.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::config::{Config, NotificationsCfg};
 use crate::draw::{Align, Canvas, CursorKind, HitId, ImageId, TextStyle, Weight};
-use crate::events::{Event, EventKind, EventMask, Kind, Notification, NotificationAccess, Source};
+use crate::events::{Event, EventKind, EventMask, Kind, Notification, Source};
 use crate::geom::{Rect, Size};
 use crate::icons::Icon;
 use crate::input::Input;
-use crate::module::{Command, Cx, DrawCx, Module, ModuleId, NotifCmd, Visibility};
+use crate::module::{Cx, DrawCx, Module, ModuleId, Visibility};
 use crate::modules::clipboard::fmt_age;
 use crate::spring::{Spring, SpringParams};
 
@@ -34,7 +32,6 @@ const CHIP_W: f32 = 44.0;
 const SUMMARY_SECS: f64 = 3.2;
 
 const HIT_CLEAR: HitId = HitId(1);
-const HIT_SETTINGS: HitId = HitId(2);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Part {
@@ -90,7 +87,6 @@ pub struct Notifications {
     show_missed: bool,
     /// Newest first.
     rows: Vec<Row>,
-    access: NotificationAccess,
     suspended: bool,
     /// Notifications that arrived while the shell was suspended and have not been looked at.
     missed: u32,
@@ -107,7 +103,6 @@ impl Notifications {
             cfg,
             show_missed,
             rows: Vec::new(),
-            access: NotificationAccess::Unknown,
             suspended: false,
             missed: 0,
             peek_mode: PeekMode::Latest,
@@ -241,30 +236,10 @@ impl Notifications {
         }
     }
 
-    fn setup_card(&self, cv: &mut Canvas, area: Rect) {
+    fn empty_card(&self, cv: &mut Canvas, area: Rect) {
         let th = *cv.theme;
-        let (title, hint, button) = match self.access {
-            NotificationAccess::Granted => (
-                "No notifications",
-                "New ones show up here for a few seconds, then tuck away.",
-                false,
-            ),
-            NotificationAccess::Unknown => (
-                "Waiting for Windows…",
-                "Asking for access to notifications.",
-                false,
-            ),
-            NotificationAccess::Denied => (
-                "Notification access is off",
-                "Allow Shark Notch under Settings → Privacy → Notifications.",
-                true,
-            ),
-            NotificationAccess::NoIdentity => (
-                "Windows notifications need app identity",
-                "Phone notifications still appear here. See docs/NOTIFICATIONS.md.",
-                false,
-            ),
-        };
+        let title = "No notifications";
+        let hint = "Banners from your iPhone show up here. See docs/IPHONE_SHORTCUTS.md.";
         let c = area.centered(area.w, 96.0);
         cv.icon(
             Icon::Bell,
@@ -283,18 +258,6 @@ impl Notifications {
             TextStyle::caption().align(Align::Center),
             th.text_faint,
         );
-        if button {
-            let b = Rect::new(c.center().x - 62.0, c.y + 74.0, 124.0, 22.0);
-            let hot = self.hover == Some(HIT_SETTINGS);
-            cv.capsule(b, if hot { th.surface_hi } else { th.surface });
-            cv.text(
-                b,
-                "Open settings",
-                TextStyle::label().align(Align::Center),
-                th.text,
-            );
-            cv.hit(b, HIT_SETTINGS, CursorKind::Hand);
-        }
     }
 }
 
@@ -312,12 +275,7 @@ impl Module for Notifications {
     }
 
     fn subscriptions(&self) -> EventMask {
-        EventMask::of(&[
-            Kind::Notification,
-            Kind::NotificationRemoved,
-            Kind::NotificationAccess,
-            Kind::Suspended,
-        ])
+        EventMask::of(&[Kind::Notification, Kind::Suspended])
     }
 
     /// Keeps the "5 min ago" labels fresh while the page is open. (Honoured only while expanded.)
@@ -365,18 +323,6 @@ impl Module for Notifications {
                 }
                 cx.request_redraw();
             }
-            EventKind::NotificationRemoved(id) => {
-                let before = self.rows.len();
-                self.rows.retain(|r| r.id != *id);
-                if self.rows.len() != before {
-                    self.clamp_scroll();
-                    cx.request_redraw();
-                }
-            }
-            EventKind::NotificationAccess(a) if self.access != *a => {
-                self.access = *a;
-                cx.request_redraw();
-            }
             EventKind::Suspended(on) => {
                 self.suspended = *on;
                 if !on && self.missed > 0 && self.show_missed {
@@ -403,13 +349,6 @@ impl Module for Notifications {
                 if self.missed > 0 {
                     self.missed = 0; // seen: the badge goes away
                     cx.request_redraw();
-                }
-                if matches!(
-                    self.access,
-                    NotificationAccess::Unknown | NotificationAccess::Denied
-                ) {
-                    // The user may just have flipped the switch in Settings.
-                    cx.command(Command::Notifications(NotifCmd::Recheck));
                 }
             }
             _ => {
@@ -458,19 +397,13 @@ impl Module for Notifications {
                 if h == HIT_CLEAR {
                     self.rows.clear();
                     self.scroll.snap(0.0);
-                    cx.command(Command::Notifications(NotifCmd::ClearAll));
                     cx.request_redraw();
-                    return true;
-                }
-                if h == HIT_SETTINGS {
-                    cx.command(Command::Notifications(NotifCmd::OpenSettings));
                     return true;
                 }
                 if let Some(Part::Dismiss(vi)) = part_of(h) {
                     if let Some(id) = self.rows.get(vi).map(|r| r.id) {
                         self.rows.retain(|r| r.id != id);
                         self.clamp_scroll();
-                        cx.command(Command::Notifications(NotifCmd::Dismiss(id)));
                         cx.request_redraw();
                     }
                     return true;
@@ -587,14 +520,9 @@ impl Module for Notifications {
             );
             cv.hit(b, HIT_CLEAR, CursorKind::Hand);
             right -= 60.0;
-            let caption = if self.access == NotificationAccess::Granted {
-                format!("{}", self.rows.len())
-            } else {
-                "phone only".to_string()
-            };
             cv.text(
                 Rect::new(right - 90.0, header.y, 90.0, header.h),
-                caption,
+                self.rows.len().to_string(),
                 TextStyle::caption().align(Align::End),
                 th.text_faint,
             );
@@ -603,7 +531,7 @@ impl Module for Notifications {
         let list = Rect::new(rest.x, rest.y + 4.0, rest.w, ROW_H * VISIBLE_ROWS as f32);
         self.list = list;
         if self.rows.is_empty() {
-            self.setup_card(cv, list);
+            self.empty_card(cv, list);
             return;
         }
         let offset = self.scroll.value() * ROW_H;
@@ -707,9 +635,6 @@ mod tests {
             let mut cx = Cx::for_test(self.now, &self.env, &self.theme, &self.cfg, &mut self.out);
             self.m.on_visibility(v, &mut cx);
         }
-        fn commands(&mut self) -> Vec<Command> {
-            std::mem::take(&mut self.out.commands)
-        }
     }
 
     fn texts(l: &DrawList) -> Vec<String> {
@@ -733,7 +658,6 @@ mod tests {
             }
         }
         assert_eq!(part_of(HIT_CLEAR), None);
-        assert_eq!(part_of(HIT_SETTINGS), None);
     }
 
     #[test]
@@ -781,26 +705,6 @@ mod tests {
             tx.iter().any(|s| s == "2 h") && tx.iter().any(|s| s == "10 min"),
             "{tx:?}"
         );
-    }
-
-    #[test]
-    fn opening_the_page_without_access_asks_the_platform_to_look_again() {
-        for (access, expect) in [
-            (NotificationAccess::Unknown, true),
-            (NotificationAccess::Denied, true),
-            (NotificationAccess::Granted, false),
-            // Identity cannot appear while the process runs: nothing to re-check.
-            (NotificationAccess::NoIdentity, false),
-        ] {
-            let mut t = T::new();
-            t.send(Source::Local, EventKind::NotificationAccess(access));
-            t.visibility(Visibility::Expanded);
-            let asked = t
-                .out
-                .commands
-                .contains(&Command::Notifications(NotifCmd::Recheck));
-            assert_eq!(asked, expect, "{access:?}");
-        }
     }
 
     #[test]
@@ -1019,7 +923,7 @@ mod tests {
     }
 
     #[test]
-    fn dismissing_forgets_the_row_and_tells_the_platform() {
+    fn dismissing_forgets_the_row() {
         let mut t = T::new();
         t.notify(note(1, "A", "one", "", false));
         t.notify(note(2, "B", "two", "", false));
@@ -1037,85 +941,16 @@ mod tests {
         );
         assert!(t.input(Some(hit(Part::Dismiss(0))), Input::Click(Vec2::ZERO)));
         assert_eq!(t.m.rows().iter().map(|r| r.id).collect::<Vec<_>>(), vec![1]);
-        assert_eq!(
-            t.commands(),
-            vec![Command::Notifications(NotifCmd::Dismiss(2))]
-        );
         assert!(t.input(Some(HIT_CLEAR), Input::Click(Vec2::ZERO)));
         assert!(t.m.rows().is_empty());
-        assert_eq!(
-            t.commands(),
-            vec![Command::Notifications(NotifCmd::ClearAll)]
-        );
     }
 
     #[test]
-    fn removal_events_from_the_platform_drop_the_row() {
+    fn the_empty_page_says_what_belongs_here() {
         let mut t = T::new();
-        t.notify(note(1, "A", "one", "", false));
-        t.send(Source::Local, EventKind::NotificationRemoved(1));
-        assert!(t.m.rows().is_empty());
-        t.send(Source::Local, EventKind::NotificationRemoved(99));
-    }
-
-    #[test]
-    fn the_empty_page_explains_what_is_missing_for_each_access_state() {
-        let cases = [
-            (NotificationAccess::Unknown, "Waiting for Windows"),
-            (NotificationAccess::Granted, "No notifications"),
-            (NotificationAccess::Denied, "Notification access is off"),
-            (NotificationAccess::NoIdentity, "need app identity"),
-        ];
-        for (access, needle) in cases {
-            let mut t = T::new();
-            t.send(Source::Local, EventKind::NotificationAccess(access));
-            let l = t.draw();
-            assert!(
-                texts(&l).iter().any(|s| s.contains(needle)),
-                "{access:?}: {:?}",
-                texts(&l)
-            );
-            assert!(l.is_balanced());
-        }
-    }
-
-    #[test]
-    fn only_a_denied_state_offers_the_settings_button() {
-        let mut t = T::new();
-        t.send(
-            Source::Local,
-            EventKind::NotificationAccess(NotificationAccess::Denied),
-        );
         let l = t.draw();
-        assert!(l.hits.iter().any(|h| h.id == HIT_SETTINGS));
-        assert!(t.input(Some(HIT_SETTINGS), Input::Click(Vec2::ZERO)));
-        assert_eq!(
-            t.commands(),
-            vec![Command::Notifications(NotifCmd::OpenSettings)]
-        );
-        let mut t2 = T::new();
-        t2.send(
-            Source::Local,
-            EventKind::NotificationAccess(NotificationAccess::NoIdentity),
-        );
-        assert!(
-            !t2.draw().hits.iter().any(|h| h.id == HIT_SETTINGS),
-            "nothing a button could fix"
-        );
-    }
-
-    #[test]
-    fn with_items_but_no_windows_access_the_header_says_phone_only() {
-        let mut t = T::new();
-        t.send(
-            Source::Local,
-            EventKind::NotificationAccess(NotificationAccess::NoIdentity),
-        );
-        t.send(
-            Source::Phone,
-            EventKind::Notification(note(1 << 32, "Messages", "Hi", "", false)),
-        );
-        assert!(texts(&t.draw()).contains(&"phone only".to_string()));
+        assert!(texts(&l).iter().any(|s| s.contains("No notifications")));
+        assert!(l.is_balanced());
     }
 
     #[test]

@@ -73,18 +73,6 @@ pub enum ShelfCmd {
     Release(Vec<u64>),
 }
 
-/// Operations on Windows notifications.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NotifCmd {
-    /// Dismiss one notification (also removes it from Windows' notification centre).
-    Dismiss(u64),
-    ClearAll,
-    /// Open Windows' "Notifications" privacy settings page.
-    OpenSettings,
-    /// The page was opened while access was missing: look again (the user may just have changed it).
-    Recheck,
-}
-
 /// Operations on the calendar feeds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CalCmd {
@@ -161,7 +149,6 @@ pub enum Command {
     Media(MediaCmd),
     Clipboard(ClipCmd),
     Shelf(ShelfCmd),
-    Notifications(NotifCmd),
     Calendar(CalCmd),
     Store(StoreCmd),
     Stats(StatsCmd),

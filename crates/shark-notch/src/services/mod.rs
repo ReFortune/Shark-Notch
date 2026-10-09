@@ -20,7 +20,6 @@ pub mod clipboard;
 pub mod control;
 pub mod downloads;
 pub mod media;
-pub mod notifications;
 pub mod phone;
 pub mod privacy;
 pub mod shelf;
@@ -34,7 +33,6 @@ pub struct Services {
     media: Option<media::MediaService>,
     clipboard: Option<clipboard::ClipboardService>,
     shelf: Option<shelf::ShelfService>,
-    notifications: Option<notifications::NotificationsService>,
     store: Option<store::StoreService>,
     calendar: Option<calendar::CalendarService>,
     privacy: Option<privacy::PrivacyService>,
@@ -60,7 +58,6 @@ impl Services {
             media: None,
             clipboard: None,
             shelf: None,
-            notifications: None,
             store: None,
             calendar: None,
             privacy: None,
@@ -136,28 +133,6 @@ impl Services {
                 }
             }
             _ => {}
-        }
-
-        let want_notif = cfg.module_active("notifications");
-        match (want_notif, self.notifications.is_some()) {
-            (true, false) => {
-                self.notifications = notifications::NotificationsService::start(
-                    cfg.notifications.clone(),
-                    self.bus.clone(),
-                    self.images.clone(),
-                );
-            }
-            (false, true) => {
-                if let Some(n) = self.notifications.take() {
-                    n.stop();
-                }
-            }
-            (true, true) => {
-                if let Some(n) = &self.notifications {
-                    n.configure(cfg.notifications.clone());
-                }
-            }
-            (false, false) => {}
         }
 
         // The store serves the modules that keep data between runs.
@@ -320,12 +295,6 @@ impl Services {
                 }
                 true
             }
-            Command::Notifications(c) => {
-                if let Some(n) = &self.notifications {
-                    n.command(*c);
-                }
-                true
-            }
             Command::Calendar(c) => {
                 if let Some(s) = &self.calendar {
                     s.command(*c);
@@ -415,9 +384,6 @@ impl Services {
         }
         if let Some(s) = self.shelf.take() {
             s.stop(&self.shelf_slot);
-        }
-        if let Some(n) = self.notifications.take() {
-            n.stop();
         }
         if let Some(c) = self.calendar.take() {
             c.stop();
