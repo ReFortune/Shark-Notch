@@ -152,18 +152,18 @@ animations. Measured by `--selftest` on a CI virtual machine (a **software rende
 
 | | |
 |---|---|
-| Idle CPU, pill collapsed | **0.02 %** of one core (exact cycle counts over 5 s, the app alone; no timers, the only recurring wake-up is the 10 Hz cursor sample) |
-| Memory, GPU stack warm | **12.7 MiB** private working set at idle (41 MiB working set incl. shared DLLs) |
-| Memory, GPU stack released | **6.4 MiB** committed (the working set is trimmed to 0.2 MiB) |
-| Memory after a session that opened every page | **24 MiB** committed with the GPU released; more with the GPU warm (see [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)) |
-| Bringing the GPU stack back | 39 ms; creating it cold: 174 ms (so it is pre-warmed when the cursor approaches) |
-| A page open and polling (stats, once a second) | 0.3 % of a core; **nothing** is read once it closes |
-| The iPhone listener, switched on, nobody connected | 0.02 % (a thread asleep in `accept()`), the same as off |
+| Idle CPU, pill collapsed | **0.04–0.05 %** of one core (exact cycle counts over 5 s, the app alone; no timers, the only recurring wake-up is the 10 Hz cursor sample) |
+| Memory, GPU stack warm | **11.6 MiB** private working set at idle (40 MiB working set incl. shared DLLs) |
+| Memory, GPU stack released | **4.8 MiB** committed (the working set is about 1.4 MiB) |
+| Memory after a session that opened every page | **20 MiB** committed with the GPU released; more with the GPU warm (see [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)) |
+| Bringing the GPU stack back | about 40–60 ms; creating it cold: 186 ms (so it is pre-warmed when the cursor approaches) |
+| A page open and polling (stats, once a second) | 0.4–0.5 % of a core; **nothing** is read once it closes |
+| The iPhone listener, switched on, nobody connected | about 0.05 % (a thread asleep in `accept()`), the same as off |
 
 **Read these with care.** A software renderer is not your GPU: a real driver loads tens of MB of
 user-mode DLLs, which is exactly why the GPU stack is released when nothing is drawn, but it also
-means *your* warm number will be higher than 12.7 MiB. The same VM also made frames hitch, and the
-report does not hide it: of 782 frames in animations, 89 were later than 1.5× the refresh interval,
+means *your* warm number will be higher than 11.6 MiB. The same VM also made frames hitch, and the
+report does not hide it: of 741 frames in animations, 77 were later than 1.5× the refresh interval,
 half of them because the software renderer needs about 16 ms to draw an opening panel, half
 because the virtual display presented late; a few frames of 100–800 ms spent all their time inside
 Direct2D's `EndDraw` (see [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) for what is and is not known
