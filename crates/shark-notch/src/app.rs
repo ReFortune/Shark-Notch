@@ -1241,7 +1241,7 @@ impl App {
         self.render_frame();
     }
 
-    fn exec(&mut self, c: Command) {
+    pub(crate) fn exec(&mut self, c: Command) {
         match c {
             Command::Shelf(ShelfCmd::DragOut(paths)) => {
                 // OLE's drag loop is modal: run it from the main loop, not from inside a message handler.
@@ -1620,6 +1620,7 @@ impl App {
                     autostart: autostart::is_enabled(),
                     hotkey: self.cfg.hotkeys.toggle.clone(),
                     status: self.status.clone(),
+                    phone_link: self.services.phone_port().is_some(),
                 };
                 let cmd = self.tray.as_ref().and_then(|t| t.show_menu(&st));
                 if let Some(cmd) = cmd {
@@ -1667,6 +1668,11 @@ impl App {
             MenuCmd::CopyDiagnostics => {
                 let text = self.diagnostics_text();
                 textclip::copy_text(self.ctrl, &text);
+            }
+            MenuCmd::PhoneToken => self.exec(Command::Phone(PhoneCmd::CopyToken)),
+            MenuCmd::NewPhoneToken => {
+                self.exec(Command::Phone(PhoneCmd::NewToken));
+                self.set_status("New iPhone token: the old one no longer works");
             }
             MenuCmd::HideTray => {
                 if let Some(t) = self.tray.as_mut() {

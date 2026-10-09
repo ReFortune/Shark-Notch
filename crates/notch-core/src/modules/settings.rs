@@ -17,7 +17,7 @@ pub fn create(cfg: &Config) -> Option<Box<dyn Module>> {
 
 /// `(section and module id, label)` of every switch. The settings page itself has none: switching
 /// it off from itself would leave no way back except the file.
-pub const SWITCHES: [(&str, &str); 10] = [
+pub const SWITCHES: [(&str, &str); 9] = [
     ("media", "Media"),
     ("clipboard", "Clipboard"),
     ("shelf", "Shelf"),
@@ -27,7 +27,6 @@ pub const SWITCHES: [(&str, &str); 10] = [
     ("live", "Live"),
     ("stats", "Stats"),
     ("control", "Controls"),
-    ("phone", "iPhone"),
 ];
 const CLOCK: (&str, &str) = ("clock", "Clock");
 

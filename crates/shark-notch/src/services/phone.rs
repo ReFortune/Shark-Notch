@@ -506,7 +506,6 @@ pub struct PhoneService {
     wake: SocketAddr,
     thread: Option<JoinHandle<()>>,
     done: Arc<AtomicBool>,
-    refreshing: Arc<AtomicBool>,
 }
 
 impl PhoneService {
@@ -553,7 +552,6 @@ impl PhoneService {
             wake: SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
             thread: Some(thread),
             done,
-            refreshing: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -601,26 +599,6 @@ impl PhoneService {
             .stack_size(128 * 1024)
             .spawn(move || save_token(&path, &token));
         true
-    }
-
-    /// Look at the PC's addresses again and tell the page if they changed (it asks every few
-    /// seconds while it is on screen). The system call runs on a short-lived thread.
-    pub fn refresh(&self) {
-        if self.refreshing.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        let (sh, flag) = (self.shared.clone(), self.refreshing.clone());
-        let spawned = std::thread::Builder::new()
-            .name("phone-refresh".into())
-            .stack_size(256 * 1024)
-            .spawn(move || {
-                sh.refresh_nets();
-                sh.publish(false);
-                flag.store(false, Ordering::Release);
-            });
-        if spawned.is_err() {
-            self.refreshing.store(false, Ordering::Release);
-        }
     }
 
     pub fn stop(mut self) {

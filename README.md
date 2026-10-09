@@ -30,7 +30,7 @@ matter right now (a microphone in use, a timer, the next meeting, a download, yo
 | **Live** | A chip while a program uses the microphone or camera, quick timers, browser downloads in progress | [`docs/LIVE.md`](docs/LIVE.md) |
 | **Stats** | CPU, memory, GPU, network and battery, with a minute of history; measured only while the page is open | [`docs/STATS.md`](docs/STATS.md) |
 | **Controls** | Volume, brightness, Wi-Fi, Bluetooth, a snip button, Windows' Focus state (read only) | [`docs/CONTROL.md`](docs/CONTROL.md) |
-| **iPhone** | Link status, the phone's battery and Focus, the pairing token. iOS Shortcuts send clipboard text, files, battery and Focus here | [`docs/IPHONE_SHORTCUTS.md`](docs/IPHONE_SHORTCUTS.md) |
+| **iPhone link** (no page) | iOS Shortcuts send clipboard text, files and banners; banners appear as notifications marked "· iPhone". Tray: *Copy iPhone token* / *New iPhone token* | [`docs/IPHONE_SHORTCUTS.md`](docs/IPHONE_SHORTCUTS.md) |
 | **Clock** | Time, date, week number | |
 
 Every module can be switched off in `config.toml` (a module that is off is never created: no thread, no

@@ -215,7 +215,7 @@ impl Services {
 
         // The iPhone listener: a port is open only while the user has switched the link on. A new
         // port means a restart; the other settings apply to the running listener.
-        let want_phone = cfg.module_active("phone") && cfg.phone.listen;
+        let want_phone = cfg.phone.enabled && cfg.phone.listen;
         let features = phone::Features::of(cfg);
         if self
             .phone
@@ -373,7 +373,6 @@ impl Services {
                         PhoneCmd::NewToken => {
                             p.new_token();
                         }
-                        PhoneCmd::Refresh => p.refresh(),
                         PhoneCmd::CopyToken => {}
                     }
                 }

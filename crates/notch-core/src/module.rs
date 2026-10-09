@@ -137,8 +137,6 @@ pub enum PhoneCmd {
     CopyToken,
     /// Make a new token: the old one stops working at once.
     NewToken,
-    /// Look at the network addresses again (the page is open and they may have changed).
-    Refresh,
 }
 
 /// Operations on the small persistent store (one JSON document per key, under the app's data folder).

@@ -526,12 +526,12 @@ impl Default for ControlCfg {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PhoneCfg {
-    /// The page exists. (It explains how to switch the link on.)
+    /// The link may be switched on at all (`listen` does that).
     pub enabled: bool,
     /// The link itself: a small server on your network. Off by default: a listener is something
     /// you switch on, knowing what it is.
     pub listen: bool,
-    /// TCP port the PC listens on. 0 picks a free one (the page shows which).
+    /// TCP port the PC listens on. 0 picks a free one.
     pub port: u16,
     /// Only accept phones on the same network as one of this PC's own addresses (not merely any
     /// private address, which would include a network reached through a router or VPN).
@@ -575,7 +575,6 @@ impl Default for Modules {
                 "live".into(),
                 "stats".into(),
                 "control".into(),
-                "phone".into(),
                 "clock".into(),
                 "settings".into(),
             ],
@@ -949,7 +948,6 @@ impl Config {
             "live" => self.live.enabled,
             "stats" => self.stats.enabled,
             "control" => self.control.enabled,
-            "phone" => self.phone.enabled,
             "settings" => self.settings.enabled,
             _ => false,
         }
@@ -1136,7 +1134,7 @@ show_missed_indicator = true
 peek_over_fullscreen = false
 
 [modules]
-order = ["media", "clipboard", "shelf", "notifications", "calendar", "pomodoro", "live", "stats", "control", "phone", "clock", "settings"]   # page order; a module that is disabled in its own section is skipped
+order = ["media", "clipboard", "shelf", "notifications", "calendar", "pomodoro", "live", "stats", "control", "clock", "settings"]   # page order; a module that is disabled in its own section is skipped
 
 [media]
 enabled = true                 # follows whatever Windows considers the current media session
@@ -1206,9 +1204,9 @@ enabled = true                 # volume, brightness, Wi-Fi, Bluetooth, a snip bu
 interval_secs = 1.0            # between readings while the page is on screen; nothing is read while it is not
 
 [phone]
-enabled = true                 # the iPhone page (it explains how to switch the link on)
+enabled = true                 # false: the link can never run, whatever `listen` says
 listen = false                 # the link itself: a small server on your own network that Shortcuts on the phone can send to. Read docs/IPHONE_SHORTCUTS.md first
-port = 8765                    # 0 = pick a free port (the page shows which)
+port = 8765                    # 0 = pick a free port
 same_network_only = true       # only phones on the same network as this PC (not any private address)
 max_file_mib = 100             # largest file accepted
 keep_days = 14                 # received files older than this are deleted

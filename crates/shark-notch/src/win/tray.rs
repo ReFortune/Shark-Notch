@@ -36,6 +36,8 @@ pub enum MenuCmd {
     Autostart,
     CopyFrames,
     CopyDiagnostics,
+    PhoneToken,
+    NewPhoneToken,
     HideTray,
     Quit,
 }
@@ -51,6 +53,8 @@ impl MenuCmd {
             Autostart,
             CopyFrames,
             CopyDiagnostics,
+            PhoneToken,
+            NewPhoneToken,
             HideTray,
             Quit,
         ]
@@ -64,6 +68,8 @@ pub struct MenuState {
     pub autostart: bool,
     pub hotkey: String,
     pub status: String,
+    /// The iPhone link is listening: its pairing token can be copied or renewed.
+    pub phone_link: bool,
 }
 
 /// RGBA-premultiplied BGRA pixels of the tray glyph at `size` px: a dark rounded square with the
@@ -266,6 +272,11 @@ impl Tray {
             sep();
             item(MenuCmd::CopyFrames, "Copy frame-time report".into(), false);
             item(MenuCmd::CopyDiagnostics, "Copy diagnostics".into(), false);
+            if st.phone_link {
+                sep();
+                item(MenuCmd::PhoneToken, "Copy iPhone token".into(), false);
+                item(MenuCmd::NewPhoneToken, "New iPhone token".into(), false);
+            }
             sep();
             item(MenuCmd::HideTray, "Hide tray icon".into(), false);
             item(MenuCmd::Quit, "Quit".into(), false);

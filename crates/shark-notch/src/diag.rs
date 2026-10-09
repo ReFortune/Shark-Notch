@@ -329,8 +329,7 @@ enum Act {
     PhoneOn,
     PhoneRun,
     PhoneCheck,
-    PhonePage,
-    PhonePageCheck,
+    PhoneCopy,
     PhoneCopyCheck,
     PhoneNewToken,
     PhoneNewTokenCheck,
@@ -470,8 +469,7 @@ const SCRIPT: &[(f64, Act)] = &[
     (105.7, Act::PhoneOn),
     (106.2, Act::PhoneRun),
     (107.6, Act::PhoneCheck),
-    (107.8, Act::PhonePage),
-    (109.8, Act::PhonePageCheck),
+    (107.8, Act::PhoneCopy),
     (110.3, Act::PhoneCopyCheck),
     (110.4, Act::PhoneNewToken),
     (110.7, Act::PhoneNewTokenCheck),
@@ -2330,62 +2328,21 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
                     st.fail(format!("phone: {label}: no"));
                 }
             }
-            // The phone's Focus is on: the pill carries its chip.
-            let owners = a.host.chip_owners();
-            st.say(format!(
-                "phone: chips on the pill while the phone's Focus is on: {owners:?}"
-            ));
-            if !owners.contains(&"phone") {
-                st.fail("phone: the phone's Focus has no chip on the pill".into());
-            }
             // From here the clipboard history must stay as it is: the token never enters it.
             st.clip_mark = clip_events(a);
         }
-        Act::PhonePage => match a.host.page_of("phone") {
-            Some(p) => {
-                a.shell.set_page(now, p);
-                a.expand(Trigger::Hotkey);
-            }
-            None => st.fail("the phone page is not in the ring".into()),
-        },
-        Act::PhonePageCheck => {
-            let text = drawn_text(a);
-            let has = |s: &str| text.iter().any(|t| t == s);
-            let url = text.iter().find(|t| t.starts_with("http://")).cloned();
-            let last = text.iter().find(|t| t.starts_with("Last: ")).cloned();
-            let link = a.last_phone_link.clone();
-            st.say(format!(
-                "phone: the page says Listening: {}; where to send: {url:?}; the phone's battery 73%: {}; its Focus 'Work': {}; {last:?}; link state {:?}",
-                has("Listening"),
-                has("73%"),
-                has("Work"),
-                link.as_deref().map(|l| (l.accepted, l.refused))
+        Act::PhoneCopy => {
+            // What the tray's "Copy iPhone token" does.
+            a.exec(notch_core::module::Command::Phone(
+                notch_core::module::PhoneCmd::CopyToken,
             ));
-            for (label, ok) in [
-                ("the page shows the listener as listening", has("Listening")),
-                (
-                    "the page shows an address to send to ending in the port",
-                    url.as_deref()
-                        .is_some_and(|u| u.ends_with(&format!(":{}", st.phone_port))),
-                ),
-                ("the phone's battery arrived on the page", has("73%")),
-                ("the phone's Focus arrived on the page", has("Work")),
-                (
-                    "the page counts what was accepted (7) and refused (17)",
-                    link.as_ref()
-                        .is_some_and(|l| l.accepted == 7 && l.refused == 17),
-                ),
-                (
-                    "the page offers the token",
-                    has("Copy token") && has("New token"),
-                ),
-            ] {
-                if !ok {
-                    st.fail(format!("phone: {label}: no ({text:?})"));
-                }
-            }
-            if !click_region(a, 1) {
-                st.fail("phone: the page has no Copy token button to click".into());
+            let link = a.last_phone_link.clone();
+            let counts = link.as_ref().map(|l| (l.accepted, l.refused));
+            st.say(format!(
+                "phone: the link counted what it accepted and refused: {counts:?}"
+            ));
+            if counts != Some((7, 17)) {
+                st.fail("phone: the link should have counted 7 accepted and 17 refused".into());
             }
         }
         Act::PhoneCopyCheck => {
@@ -2409,11 +2366,9 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
             }
         }
         Act::PhoneNewToken => {
-            // Two taps: the first one only asks "sure?".
-            let (first, second) = (click_region(a, 2), click_region(a, 2));
-            if !(first && second) {
-                st.fail("phone: the page has no New token button to click".into());
-            }
+            a.exec(notch_core::module::Command::Phone(
+                notch_core::module::PhoneCmd::NewToken,
+            ));
         }
         Act::PhoneNewTokenCheck => {
             let old = std::mem::take(&mut st.phone_token);
@@ -2456,13 +2411,6 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
             ));
             if !gone {
                 st.fail("phone: the listener survived [phone] listen = false".into());
-            }
-            // What the phone last said is no longer current: its Focus chip goes with the link.
-            let owners = a.host.chip_owners();
-            if owners.contains(&"phone") {
-                st.fail(format!(
-                    "phone: the Focus chip stayed on the pill after the link was switched off (chips: {owners:?})"
-                ));
             }
             let port = st.phone_port;
             st.phone_job = Some(spawn_job("selftest-phone", move || {

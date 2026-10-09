@@ -10,7 +10,6 @@ pub mod control;
 pub mod live;
 pub mod media;
 pub mod notifications;
-pub mod phone;
 pub mod pomodoro;
 pub mod settings;
 pub mod shelf;
@@ -54,10 +53,6 @@ pub fn registry() -> Vec<Factory> {
         Factory {
             id: "control",
             create: control::create,
-        },
-        Factory {
-            id: "phone",
-            create: phone::create,
         },
         Factory {
             id: "clock",
