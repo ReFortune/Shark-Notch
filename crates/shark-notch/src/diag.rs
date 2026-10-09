@@ -2520,6 +2520,19 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
             }
         }
         Act::AwakeCheck => {
+            // The microphone tile is there (it is not clicked: that would mute the machine's real
+            // microphone). Its state is whatever this PC has: Live, Muted or No microphone.
+            let text = drawn_text(a);
+            let tile = text.iter().any(|t| t == "Microphone");
+            st.say(format!(
+                "mic mute: the controls page shows a Microphone tile: {tile} (texts: {:?})",
+                text.iter()
+                    .filter(|t| ["Live", "Muted", "No microphone", "…"].contains(&t.as_str()))
+                    .collect::<Vec<_>>()
+            ));
+            if a.cfg.control.mic_mute && !tile {
+                st.fail("mic mute: the controls page has no Microphone tile".into());
+            }
             let on = sys::keep_awake_active();
             let chip = a.host.chip_owners().contains(&"control");
             st.say(format!(

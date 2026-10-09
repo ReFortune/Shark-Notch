@@ -39,6 +39,7 @@ Each control below says what it uses and where it will not work.
 | **Focus** | `SHQueryUserNotificationState`: **reads** whether Windows is in quiet time. The tile **opens Windows' Focus settings** (`ms-settings:quietmomentshome`). | See below: it cannot *change* Focus. |
 | **Snip** | Opens Windows' screen-snip overlay (`ms-screenclip:`: Snipping Tool, or Snip & Sketch on older Windows 10). | The notch captures nothing itself; the snip tool does everything and shows what it captured in its own way. |
 | **Keep awake** | While on, Windows does not go to sleep and the screen stays on (`SetThreadExecutionState`); a cup chip sits on the pill while it is on. | Off at every start and when the app quits; `[control] keep_awake = false` removes the tile. The request belongs to the UI thread and is dropped if the module is switched off. |
+| **Microphone** | Mutes or unmutes the default microphone (`IAudioEndpointVolume` on the capture device, the switch behind Windows' own sound settings). The same button sits next to a program on the Live page while it is using the microphone. | The pill's chip itself is click-through, so the button is on the Live page, not on the chip. `[control] mic_mute = false` removes both. Not tested against a real microphone. |
 
 ## Focus / do not disturb: read-only, on purpose
 

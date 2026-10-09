@@ -44,6 +44,8 @@ pub enum Icon {
     /// A stopwatch.
     Timer,
     Mic,
+    /// A microphone with a slash: muted.
+    MicMuted,
     /// An arrow down into a tray: a download.
     Download,
     /// A heartbeat line: system activity.
@@ -72,7 +74,7 @@ pub enum Icon {
 
 impl Icon {
     /// Every icon, for tests and the preview tool.
-    pub const ALL: [Icon; 39] = [
+    pub const ALL: [Icon; 40] = [
         Icon::Play,
         Icon::Pause,
         Icon::Next,
@@ -100,6 +102,7 @@ impl Icon {
         Icon::Reset,
         Icon::Timer,
         Icon::Mic,
+        Icon::MicMuted,
         Icon::Download,
         Icon::Pulse,
         Icon::Bolt,
@@ -446,12 +449,18 @@ pub fn ops(icon: Icon) -> Vec<IconOp> {
                 Stroke(polyline(&[wing(40.0), tip, wing(-40.0)], false), 2.0),
             ]
         }
-        Icon::Mic => vec![
-            Stroke(rrect_path(8.5, 3.5, 7.0, 11.5, 3.5), 2.0),
-            Stroke(arc_path(12.0, 11.5, 6.6, 90.0, 180.0), 2.0),
-            Stroke(polyline(&[(12.0, 18.1), (12.0, 21.0)], false), 2.0),
-            Stroke(polyline(&[(8.5, 21.0), (15.5, 21.0)], false), 2.0),
-        ],
+        Icon::Mic | Icon::MicMuted => {
+            let mut v = vec![
+                Stroke(rrect_path(8.5, 3.5, 7.0, 11.5, 3.5), 2.0),
+                Stroke(arc_path(12.0, 11.5, 6.6, 90.0, 180.0), 2.0),
+                Stroke(polyline(&[(12.0, 18.1), (12.0, 21.0)], false), 2.0),
+                Stroke(polyline(&[(8.5, 21.0), (15.5, 21.0)], false), 2.0),
+            ];
+            if icon == Icon::MicMuted {
+                v.push(Stroke(polyline(&[(4.0, 3.0), (20.0, 21.0)], false), 2.0));
+            }
+            v
+        }
         Icon::Pulse => vec![Stroke(
             polyline(
                 &[

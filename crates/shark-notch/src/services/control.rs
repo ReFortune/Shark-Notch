@@ -34,8 +34,11 @@ use windows::Devices::Radios::{
     Radio as WinRadio, RadioAccessStatus, RadioKind as WinRadioKind, RadioState,
 };
 use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE};
+use windows::Win32::Media::Audio::EDataFlow;
 use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
-use windows::Win32::Media::Audio::{IMMDeviceEnumerator, MMDeviceEnumerator, eMultimedia, eRender};
+use windows::Win32::Media::Audio::{
+    IMMDeviceEnumerator, MMDeviceEnumerator, eCapture, eMultimedia, eRender,
+};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
@@ -126,11 +129,11 @@ impl Drop for WinRt {
 
 // ----- volume --------------------------------------------------------------------------------
 
-fn endpoint() -> Option<IAudioEndpointVolume> {
+fn endpoint(flow: EDataFlow) -> Option<IAudioEndpointVolume> {
     unsafe {
         let en: IMMDeviceEnumerator =
             CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).ok()?;
-        let dev = en.GetDefaultAudioEndpoint(eRender, eMultimedia).ok()?;
+        let dev = en.GetDefaultAudioEndpoint(flow, eMultimedia).ok()?;
         dev.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None).ok()
     }
 }
@@ -281,6 +284,8 @@ fn do_not_disturb() -> Option<bool> {
 #[derive(Default)]
 struct Devices {
     volume: Option<IAudioEndpointVolume>,
+    /// The default microphone (looked up again for every reading, like the speakers).
+    mic: Option<IAudioEndpointVolume>,
     lcd: Option<Lcd>,
     lcd_checked: bool,
     /// The radio access answer (asked once; asked again while it was refusing).
@@ -290,7 +295,7 @@ struct Devices {
 impl Devices {
     fn volume(&mut self) -> Option<&IAudioEndpointVolume> {
         if self.volume.is_none() {
-            self.volume = endpoint();
+            self.volume = endpoint(eRender);
         }
         self.volume.as_ref()
     }
@@ -336,6 +341,12 @@ impl Devices {
         // The default output device can change at any time: look it up again for every reading.
         self.volume = None;
         let volume = self.volume().and_then(read_volume);
+        self.mic = endpoint(eCapture);
+        let mic_muted = self
+            .mic
+            .as_ref()
+            .and_then(|ep| unsafe { ep.GetMute() }.ok())
+            .map(|m| m.as_bool());
         let brightness = self.lcd().and_then(Lcd::get);
         let (wifi, bluetooth) = self.read_radios();
         ControlState {
@@ -344,6 +355,7 @@ impl Devices {
             wifi,
             bluetooth,
             dnd: do_not_disturb(),
+            mic_muted,
         }
     }
 
@@ -412,6 +424,16 @@ fn run(rx: &Receiver<Req>, bus: &BusSender) {
                 }
                 ControlCmd::ToggleMute => {
                     if let Some(ep) = dev.volume().cloned() {
+                        unsafe {
+                            if let Ok(m) = ep.GetMute() {
+                                let _ = ep.SetMute(!m.as_bool(), std::ptr::null());
+                            }
+                        }
+                    }
+                    answer = true;
+                }
+                ControlCmd::ToggleMicMute => {
+                    if let Some(ep) = endpoint(eCapture) {
                         unsafe {
                             if let Ok(m) = ep.GetMute() {
                                 let _ = ep.SetMute(!m.as_bool(), std::ptr::null());

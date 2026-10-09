@@ -511,6 +511,8 @@ pub struct ControlCfg {
     /// A "Keep awake" tile (and a chip while it is on) that stops Windows sleeping and the screen
     /// turning off. It is off at every start.
     pub keep_awake: bool,
+    /// A microphone mute tile, and a mute button next to a program that is using the microphone.
+    pub mic_mute: bool,
 }
 
 impl Default for ControlCfg {
@@ -519,6 +521,7 @@ impl Default for ControlCfg {
             enabled: true,
             interval_secs: 1.0,
             keep_awake: true,
+            mic_mute: true,
         }
     }
 }
@@ -1202,6 +1205,7 @@ net_bits = false               # network speeds in Mbps instead of MB/s
 enabled = true                 # volume, brightness, Wi-Fi, Bluetooth, a snip button and Focus; see docs/CONTROL.md
 interval_secs = 1.0            # between readings while the page is on screen; nothing is read while it is not
 keep_awake = true              # a Keep awake tile; while it is on the PC does not sleep and the screen stays on (off at every start)
+mic_mute = true                # a microphone mute tile, and a mute button on the Live page while a program uses the microphone
 
 [phone]
 enabled = true                 # false: the link can never run, whatever `listen` says

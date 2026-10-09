@@ -160,6 +160,8 @@ pub struct ControlState {
     pub bluetooth: Radio,
     /// Windows' do-not-disturb (focus assist) is on. Windows has no supported way to *change* it.
     pub dnd: Option<bool>,
+    /// The default microphone is muted (`None`: this PC has no microphone).
+    pub mic_muted: Option<bool>,
 }
 
 /// The state of the iPhone link: where the PC listens and what it last heard.
@@ -472,6 +474,7 @@ mod tests {
                 wifi: Radio::Unavailable,
                 bluetooth: Radio::Unavailable,
                 dnd: None,
+                mic_muted: None,
             })),
             EventKind::Stats(Arc::new(StatsSnapshot {
                 cpu: None,

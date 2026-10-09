@@ -24,7 +24,7 @@ use crate::events::{
 use crate::geom::{Rect, Size};
 use crate::icons::Icon;
 use crate::input::Input;
-use crate::module::{Command, Cx, DrawCx, Env, Module, ModuleId, StoreCmd, Visibility};
+use crate::module::{Command, ControlCmd, Cx, DrawCx, Env, Module, ModuleId, StoreCmd, Visibility};
 use crate::pomodoro::{chip_minutes, format_clock, secs_to_chip_change};
 use crate::theme::Theme;
 use crate::timers::{Timers, label_for};
@@ -34,6 +34,7 @@ const ROW_H: f32 = 36.0;
 const MAX_ACTIVITY_ROWS: usize = 4;
 
 const HIT_SHOW: HitId = HitId(900);
+const HIT_MIC: HitId = HitId(300);
 
 fn hit_preset(i: usize) -> HitId {
     HitId(100 + i as u32)
@@ -43,9 +44,11 @@ fn hit_cancel(i: usize) -> HitId {
 }
 
 pub fn create(cfg: &Config) -> Option<Box<dyn Module>> {
-    cfg.live
-        .enabled
-        .then(|| Box::new(Live::new(cfg.live.clone())) as Box<dyn Module>)
+    cfg.live.enabled.then(|| {
+        let mut m = Live::new(cfg.live.clone());
+        m.mic_mute = cfg.control.mic_mute;
+        Box::new(m) as Box<dyn Module>
+    })
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -72,6 +75,8 @@ struct Row {
     warn: bool,
     title: String,
     sub: String,
+    /// A microphone row: it carries the mute button.
+    mic: bool,
 }
 
 pub struct Live {
@@ -84,6 +89,12 @@ pub struct Live {
     hover: Option<HitId>,
     suspended: bool,
     last_saved: String,
+    /// Show a mute button next to a program that is using the microphone (`[control] mic_mute`).
+    mic_mute: bool,
+    /// Whether the microphone is muted, as last read or just toggled (with when the toggle stops
+    /// being trusted over a reading).
+    mic: Option<bool>,
+    mic_hold_until: f64,
 }
 
 fn preset_label(minutes: u32) -> String {
@@ -106,6 +117,9 @@ impl Live {
             hover: None,
             suspended: false,
             last_saved: String::new(),
+            mic_mute: true,
+            mic: None,
+            mic_hold_until: 0.0,
         }
     }
 
@@ -119,6 +133,16 @@ impl Live {
         } else {
             None
         }
+    }
+
+    /// The microphone is in use and its mute state is worth knowing (the page asks the platform).
+    fn wants_mic_state(&self) -> bool {
+        self.mic_mute && self.cfg.privacy && !self.privacy.mic.is_empty()
+    }
+
+    /// Mute state to draw: the toggle just made, else the last reading.
+    fn mic_muted(&self) -> Option<bool> {
+        self.mic
     }
 
     fn save(&mut self, cx: &mut Cx) {
@@ -157,6 +181,7 @@ impl Live {
                     warn: true,
                     title: app.to_string(),
                     sub: "Using the microphone".into(),
+                    mic: true,
                 });
             }
             for app in self.privacy.camera.iter() {
@@ -165,6 +190,7 @@ impl Live {
                     warn: true,
                     title: app.to_string(),
                     sub: "Using the camera".into(),
+                    mic: false,
                 });
             }
         }
@@ -180,6 +206,7 @@ impl Live {
                     warn: false,
                     title: d.name.to_string(),
                     sub,
+                    mic: false,
                 });
             }
         }
@@ -285,6 +312,23 @@ impl Live {
                 ROW_H - 4.0,
             );
             let tile = Rect::new(r.x, r.y + 2.0, 28.0, 28.0);
+            let mute = row
+                .mic
+                .then(|| self.mic_muted())
+                .flatten()
+                .filter(|_| self.mic_mute);
+            let right = r.right() - if mute.is_some() { 34.0 } else { 0.0 };
+            if let Some(muted) = mute {
+                let b = Rect::new(r.right() - 30.0, r.y + 3.0, 26.0, 26.0);
+                let hot = self.hover == Some(HIT_MIC);
+                cv.icon_button(
+                    b,
+                    if muted { Icon::MicMuted } else { Icon::Mic },
+                    HIT_MIC,
+                    if muted { th.warn } else { th.text_dim },
+                    hot.then_some(th.surface_hi),
+                );
+            }
             cv.squircle(tile, 8.0, th.surface_hi);
             cv.icon(
                 row.icon,
@@ -292,12 +336,7 @@ impl Live {
                 if row.warn { th.warn } else { th.accent },
             );
             cv.text(
-                Rect::new(
-                    tile.right() + 8.0,
-                    r.y,
-                    r.right() - tile.right() - 8.0,
-                    17.0,
-                ),
+                Rect::new(tile.right() + 8.0, r.y, right - tile.right() - 8.0, 17.0),
                 Text::from(row.title.clone()),
                 TextStyle::new(13.0, Weight::Medium),
                 th.text,
@@ -306,7 +345,7 @@ impl Live {
                 Rect::new(
                     tile.right() + 8.0,
                     r.y + 16.0,
-                    r.right() - tile.right() - 8.0,
+                    right - tile.right() - 8.0,
                     15.0,
                 ),
                 Text::from(row.sub.clone()),
@@ -351,6 +390,7 @@ impl Module for Live {
             Kind::Downloads,
             Kind::DownloadDone,
             Kind::StoreLoaded,
+            Kind::Control,
         ])
     }
 
@@ -417,6 +457,13 @@ impl Module for Live {
                 self.privacy = p.clone();
                 cx.request_redraw();
             }
+            EventKind::Control(s) => {
+                // A reading in flight must not undo a toggle made a moment ago.
+                if cx.now >= self.mic_hold_until && self.mic != s.mic_muted {
+                    self.mic = s.mic_muted;
+                    cx.request_redraw();
+                }
+            }
             EventKind::Downloads(d) => {
                 self.downloads = d.clone();
                 cx.request_redraw();
@@ -443,10 +490,14 @@ impl Module for Live {
 
     fn on_config(&mut self, cfg: &Config, cx: &mut Cx) {
         self.cfg = cfg.live.clone();
+        self.mic_mute = cfg.control.mic_mute;
         cx.request_redraw();
     }
 
-    fn on_visibility(&mut self, v: Visibility, _cx: &mut Cx) {
+    fn on_visibility(&mut self, v: Visibility, cx: &mut Cx) {
+        if v == Visibility::Expanded && self.wants_mic_state() {
+            cx.command(Command::Control(ControlCmd::Refresh));
+        }
         if v != Visibility::Expanded {
             self.hover = None;
         }
@@ -465,6 +516,9 @@ impl Module for Live {
     }
 
     fn on_poll(&mut self, cx: &mut Cx) {
+        if self.wants_mic_state() {
+            cx.command(Command::Control(ControlCmd::Refresh));
+        }
         cx.request_redraw();
     }
 
@@ -491,6 +545,13 @@ impl Module for Live {
                         if let Some(&m) = self.cfg.timer_presets.get(i) {
                             self.timers.add(m, cx.env.unix);
                             self.save(cx);
+                        }
+                    }
+                    300 => {
+                        if let Some(m) = self.mic_muted() {
+                            self.mic = Some(!m);
+                            self.mic_hold_until = cx.now + 1.2;
+                            cx.command(Command::Control(ControlCmd::ToggleMicMute));
                         }
                     }
                     200..=202 => {
@@ -1104,5 +1165,65 @@ mod tests {
         )]);
         assert!(host.chips_width() > 0.0);
         assert_eq!(host.pages().len(), 1);
+    }
+
+    fn control_event(t: &mut T, muted: Option<bool>) {
+        t.send(EventKind::Control(Arc::new(crate::events::ControlState {
+            volume: None,
+            brightness: None,
+            wifi: crate::events::Radio::Unavailable,
+            bluetooth: crate::events::Radio::Unavailable,
+            dnd: None,
+            mic_muted: muted,
+        })));
+    }
+
+    #[test]
+    fn a_program_using_the_microphone_gets_a_mute_button() {
+        let mut t = T::new();
+        // Nothing to mute, or no reading yet: no button.
+        assert!(!t.draw().hits.iter().any(|h| h.id == HIT_MIC));
+        t.mic(&["Zoom"], &[]);
+        assert!(!t.draw().hits.iter().any(|h| h.id == HIT_MIC), "no reading");
+        control_event(&mut t, Some(false));
+        assert!(t.draw().hits.iter().any(|h| h.id == HIT_MIC));
+        assert!(t.click(HIT_MIC));
+        assert_eq!(
+            std::mem::take(&mut t.out.commands),
+            vec![Command::Control(ControlCmd::ToggleMicMute)]
+        );
+        // A reading that was already in flight does not undo the click...
+        control_event(&mut t, Some(false));
+        assert_eq!(t.m.mic_muted(), Some(true));
+        // ...but later ones are believed again.
+        t.now += 2.0;
+        control_event(&mut t, Some(false));
+        assert_eq!(t.m.mic_muted(), Some(false));
+        // The switch removes the button.
+        t.m.mic_mute = false;
+        assert!(!t.draw().hits.iter().any(|h| h.id == HIT_MIC));
+    }
+
+    #[test]
+    fn the_mute_state_is_only_asked_for_while_the_microphone_is_in_use() {
+        let mut t = T::new();
+        let ask = |t: &mut T| {
+            let mut cx = cx!(t);
+            t.m.on_visibility(Visibility::Expanded, &mut cx);
+            t.m.on_poll(&mut cx);
+            let n = t
+                .out
+                .commands
+                .iter()
+                .filter(|c| **c == Command::Control(ControlCmd::Refresh))
+                .count();
+            t.out.commands.clear();
+            n
+        };
+        assert_eq!(ask(&mut t), 0);
+        t.mic(&["Zoom"], &[]);
+        assert_eq!(ask(&mut t), 2);
+        t.m.mic_mute = false;
+        assert_eq!(ask(&mut t), 0);
     }
 }

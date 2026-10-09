@@ -102,6 +102,8 @@ pub enum ControlCmd {
     Refresh,
     SetVolume(f32),
     ToggleMute,
+    /// Mute or unmute the default microphone.
+    ToggleMicMute,
     SetBrightness(f32),
     SetRadio {
         kind: RadioKind,

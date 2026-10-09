@@ -30,6 +30,7 @@ const HIT_MUTE: HitId = HitId(5);
 const HIT_VOLUME: HitId = HitId(6);
 const HIT_BRIGHTNESS: HitId = HitId(7);
 const HIT_AWAKE: HitId = HitId(8);
+const HIT_MIC: HitId = HitId(9);
 
 const GAP: f32 = 8.0;
 const TILE_H: f32 = 64.0;
@@ -69,6 +70,7 @@ struct Layout {
     focus: Rect,
     snip: Rect,
     awake: Rect,
+    mic: Rect,
     mute: Rect,
     volume: Rect,
     volume_label: Rect,
@@ -98,6 +100,7 @@ impl Layout {
             focus: tile(2.0),
             snip: tile(3.0),
             awake: Rect::new(area.x, area.y + TILE_H + GAP, tw, TILE_H),
+            mic: Rect::new(area.x + tw + GAP, area.y + TILE_H + GAP, tw, TILE_H),
             mute: Rect::new(area.x + 2.0, vy + (ROW_H - 32.0) * 0.5, 32.0, 32.0),
             volume: slider(vy),
             volume_label: label(vy),
@@ -133,6 +136,7 @@ pub struct Control {
     last_sent: [f64; 2],
     /// Optimistic mute and radio states, each with the time its hold ends.
     mute: Option<(bool, f64)>,
+    mic: Option<(bool, f64)>,
     wifi: Option<(bool, f64)>,
     bluetooth: Option<(bool, f64)>,
     lay: Option<Rect>,
@@ -151,6 +155,7 @@ impl Control {
             hold_until: [0.0, 0.0],
             last_sent: [f64::NEG_INFINITY; 2],
             mute: None,
+            mic: None,
             wifi: None,
             bluetooth: None,
             lay: None,
@@ -184,6 +189,14 @@ impl Control {
                 .as_ref()
                 .and_then(|s| s.volume)
                 .is_some_and(|(_, m)| m),
+        }
+    }
+
+    /// Is the microphone muted (`None`: no microphone, or nothing read yet)?
+    fn mic_muted(&self, now: f64) -> Option<bool> {
+        match self.mic {
+            Some((m, until)) if now < until => Some(m),
+            _ => self.state.as_ref().and_then(|s| s.mic_muted),
         }
     }
 
@@ -491,6 +504,7 @@ impl Module for Control {
         self.shown = [None, None];
         self.hold_until = [0.0, 0.0];
         self.mute = None;
+        self.mic = None;
         self.wifi = None;
         self.bluetooth = None;
     }
@@ -559,6 +573,15 @@ impl Module for Control {
                         cx.command(Command::Control(ControlCmd::OpenFocusSettings));
                         true
                     }
+                    Some(HIT_MIC) => match self.mic_muted(cx.now) {
+                        Some(m) => {
+                            self.mic = Some((!m, cx.now + HOLD_SECS));
+                            cx.command(Command::Control(ControlCmd::ToggleMicMute));
+                            cx.request_redraw();
+                            true
+                        }
+                        None => false,
+                    },
                     Some(HIT_AWAKE) => {
                         self.awake = !self.awake;
                         cx.command(Command::KeepAwake(self.awake));
@@ -639,6 +662,26 @@ impl Module for Control {
                     } else {
                         TileLook::Off
                     },
+                },
+            );
+        }
+
+        if self.cfg.mic_mute {
+            let (sub, look, icon) = match (known, self.mic_muted(now)) {
+                (false, _) => ("…", TileLook::Unavailable, Icon::Mic),
+                (true, None) => ("No microphone", TileLook::Unavailable, Icon::Mic),
+                (true, Some(true)) => ("Muted", TileLook::Warn, Icon::MicMuted),
+                (true, Some(false)) => ("Live", TileLook::Off, Icon::Mic),
+            };
+            self.draw_tile(
+                cv,
+                lay.mic,
+                TileSpec {
+                    id: HIT_MIC,
+                    icon,
+                    label: "Microphone",
+                    sub: Text::Static(sub),
+                    look,
                 },
             );
         }
@@ -753,6 +796,7 @@ mod tests {
             wifi: Radio::On,
             bluetooth: Radio::Off,
             dnd: Some(false),
+            mic_muted: Some(false),
         }
     }
 
@@ -911,6 +955,7 @@ mod tests {
             wifi: Radio::Unavailable,
             bluetooth: Radio::Unavailable,
             dnd: None,
+            mic_muted: None,
         });
         let tx = t.texts();
         for want in [
@@ -1209,5 +1254,31 @@ mod tests {
         t.m.on_config(&cfg, &mut cx);
         assert_eq!(t.commands(), vec![Command::KeepAwake(false)]);
         assert!(!t.texts().contains(&"Keep awake".to_string()));
+    }
+
+    #[test]
+    fn the_microphone_tile_mutes_and_says_what_it_found() {
+        let mut t = T::new();
+        t.feed(state());
+        assert!(t.texts().contains(&"Live".to_string()));
+        assert!(t.click(HIT_MIC));
+        assert_eq!(
+            t.commands(),
+            vec![Command::Control(ControlCmd::ToggleMicMute)]
+        );
+        assert!(t.texts().contains(&"Muted".to_string()), "at once");
+        // No microphone: the tile says so and does nothing.
+        let mut none = T::new();
+        none.feed(ControlState {
+            mic_muted: None,
+            ..state()
+        });
+        assert!(none.texts().contains(&"No microphone".to_string()));
+        assert!(!none.click(HIT_MIC));
+        // Switched off in the config: no tile.
+        let mut off = T::new();
+        off.m.cfg.mic_mute = false;
+        off.feed(state());
+        assert!(!off.texts().contains(&"Microphone".to_string()));
     }
 }
