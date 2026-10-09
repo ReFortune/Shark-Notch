@@ -193,6 +193,9 @@ pub struct App {
     /// When the last frame was presented: frames are never presented much faster than the display
     /// refreshes (see `MIN_FRAME_GAP`).
     last_present_at: f64,
+    /// A frame signal was received too early and its frame is owed once the gap has passed (the
+    /// signal is used up by the wait, so nothing would ask for that frame again).
+    frame_owed: bool,
 }
 
 thread_local! {
@@ -439,6 +442,7 @@ impl App {
             slow_frames_logged: 0,
             frame_block_until: 0.0,
             last_present_at: 0.0,
+            frame_owed: false,
             cfg,
         };
         app.metrics = make_metrics(&app.cfg, &app.theme);
@@ -770,6 +774,7 @@ impl App {
     }
 
     pub(crate) fn render_frame(&mut self) {
+        self.frame_owed = false;
         let t_start = clock::now();
         if self.stage.is_none() {
             return;
@@ -2016,6 +2021,7 @@ impl App {
                 let gap = self.period * MIN_FRAME_GAP;
                 if self.last_present_at > 0.0 && now - self.last_present_at < gap {
                     self.frame_block_until = self.last_present_at + gap;
+                    self.frame_owed = true;
                 } else {
                     self.render_frame();
                 }
@@ -2034,6 +2040,9 @@ impl App {
             self.pump_bus();
         }
         self.run_timers(now);
+        if self.frame_owed && now >= self.frame_block_until && self.animating() {
+            self.render_frame();
+        }
         if self.animating() && (self.stage.is_none() || now < self.frame_block_until) {
             self.shell.step(now);
         }
