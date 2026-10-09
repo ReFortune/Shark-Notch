@@ -16,13 +16,13 @@ the numbers cannot tell you.
 
 | Metric | Budget | Measured (CI virtual machine) | Worth |
 |--------|--------|-------------------------------|-------|
-| Idle CPU, collapsed pill | ≈ 0 % | **0.02-0.04 %** of one core over 5 s, with the GPU stack warm or released (exact cycle counts, the app alone). The only recurring wake-up is the 10 Hz cursor sample | Meaningful: nothing in it depends on a GPU |
-| Memory with the GPU stack warm | 10–30 MB | **12.7 MiB** private working set at idle; 41 MiB working set (shared system DLLs included) | Indicative: a real driver adds its user-mode DLLs on top |
-| Memory with the GPU stack released | ≈ 5–10 MB | **6.4 MiB** committed; the working set is trimmed to **0.2 MiB** private | Meaningful for commit; the trimmed working set is a snapshot (see below) |
-| Cost of bringing the GPU stack back | not on the hover path (it is pre-warmed when the cursor approaches) | **39 ms** from released; **174 ms** the first time (software device) | Indicative |
-| A page open and polling (stats, 1 Hz) | low | **0.3 %** of one core; **nothing** measured once the page closes | Meaningful |
-| The iPhone listener, on, nobody connected | ≈ 0 % | **0.02 %**, the same as without it: one thread asleep in `accept()` | Meaningful |
-| After a session that opened every page and exercised every module | 10–30 MB | **24 MiB** committed with the GPU released; the private working set with the GPU warm late in the script was 26–43 MiB | Over the budget when everything has been used and the GPU is warm; see [Memory after a full session](#memory-after-a-full-session) |
+| Idle CPU, collapsed pill | ≈ 0 % | **0.04-0.05 %** of one core over 5 s, with the GPU stack warm or released (exact cycle counts, the app alone). The only recurring wake-up is the 10 Hz cursor sample | Meaningful: nothing in it depends on a GPU |
+| Memory with the GPU stack warm | 10–30 MB | **11.6 MiB** private working set at idle; 40 MiB working set (shared system DLLs included) | Indicative: a real driver adds its user-mode DLLs on top |
+| Memory with the GPU stack released | ≈ 5–10 MB | **4.8 MiB** committed; the working set is about **1.4 MiB** private | Meaningful for commit; the trimmed working set is a snapshot (see below) |
+| Cost of bringing the GPU stack back | not on the hover path (it is pre-warmed when the cursor approaches) | **about 40-60 ms** from released; **186 ms** the first time (software device) | Indicative |
+| A page open and polling (stats, 1 Hz) | low | **0.4-0.5 %** of one core; **nothing** measured once the page closes | Meaningful |
+| The iPhone listener, on, nobody connected | ≈ 0 % | about **0.05 %**, the same as without it: one thread asleep in `accept()` | Meaningful |
+| After a session that opened every page and exercised every module | 10–30 MB | **20 MiB** committed with the GPU released; the private working set with the GPU warm late in the script was 17–43 MiB | Over the budget when everything has been used and the GPU is warm; see [Memory after a full session](#memory-after-a-full-session) |
 
 Not measured at all, because nothing there could: a real GPU's memory, the cost of the first frame
 on a real driver, a 144 Hz display, an HDR monitor, per-monitor DPI changes, a laptop on battery.
@@ -161,7 +161,7 @@ the same software renderer.
 | 7 Calendar, Pomodoro | `e8fb0d4` | 0.331 / 0.328 % | 11.3 / 0.2 MiB | 223 / 49 ms | 481 | 85 | 423 ms |
 | 8–10 Live, stats, controls | `3ef2a8b` | 0.133 / 0.122 % | 11.7 / 0.2 MiB | 167 / 48 ms | 852 | 91 | 413 ms |
 | 11 iPhone link | `4d7bb8c` | 0.171 / 0.163 % | 12.3 / 0.2 MiB | 134 / 64 ms | 946 | 88 | 681 ms |
-| after 11: diagnostics | `58c1914` | 0.021 / 0.026 % ¹ | 12.7 / 0.2 MiB | 174 / 39 ms | 973 | 89 | 818 ms |
+| final | `d40aaec`+ | 0.055 / 0.054 % ¹ | 11.6 / 1.4 MiB | 186 / 61 ms | 928 | 77 | 551 ms |
 
 ¹ **From phase 4 on the idle CPU figure includes the self-test's own heartbeat thread**, a helper
 that wakes 66 times a second to notice stalls of the whole machine. It first existed in phase 4,
