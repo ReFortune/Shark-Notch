@@ -176,7 +176,7 @@ pub struct App {
     _session: Option<SessionWatch>,
     cfg_watch: Option<ConfigWatch>,
     last_interactive: bool,
-    burst: bool,
+    pub(crate) burst: bool,
     pub(crate) period: f64,
     cursor: Vec2,
     press: Option<HitId>,
