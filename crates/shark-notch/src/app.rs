@@ -190,6 +190,9 @@ pub struct App {
     pub(crate) last_prewarm_ms: f64,
     slow_frames_logged: u32,
     frame_block_until: f64,
+    /// When the last frame was presented: frames are never presented much faster than the display
+    /// refreshes (see `MIN_FRAME_GAP`).
+    last_present_at: f64,
 }
 
 thread_local! {
@@ -435,6 +438,7 @@ impl App {
             last_prewarm_ms: 0.0,
             slow_frames_logged: 0,
             frame_block_until: 0.0,
+            last_present_at: 0.0,
             cfg,
         };
         app.metrics = make_metrics(&app.cfg, &app.theme);
@@ -797,6 +801,7 @@ impl App {
         match result {
             Some(Ok(t)) => {
                 self.frames_presented += 1;
+                self.last_present_at = clock::now();
                 times = Some(t);
             }
             Some(Err(e)) if is_device_lost(&e) => {
@@ -1985,8 +1990,16 @@ impl App {
                 (((d - now) * 1000.0).ceil().max(0.0) as u64).min(u32::MAX as u64 - 1) as u32;
         }
         if animating && plan.frame_idx.is_none() {
-            // No usable frame handle (no GPU, or backing off after an error): tick the shell on a timer.
-            plan.timeout = plan.timeout.min(16);
+            // No usable frame handle (no GPU, backing off after an error, or waiting out the gap
+            // between two frames): tick the shell on a timer.
+            let wait = if self.frame_block_until > now {
+                ((self.frame_block_until - now) * 1000.0)
+                    .ceil()
+                    .clamp(1.0, 16.0) as u32
+            } else {
+                16
+            };
+            plan.timeout = plan.timeout.min(wait);
         }
         plan
     }
@@ -1995,7 +2008,18 @@ impl App {
     fn after_wait(&mut self, signal: Signal) {
         let now = clock::now();
         match signal {
-            Signal::Frame => self.render_frame(),
+            Signal::Frame => {
+                // A frame presented a fraction of a refresh period after the last one shows
+                // nothing new, and on a compositor that is slow to release buffers it queues up
+                // behind the others: the long stalls of the CI virtual machine came in bursts of
+                // such frames. Wait out the gap instead (a normal display never gets here).
+                let gap = self.period * MIN_FRAME_GAP;
+                if self.last_present_at > 0.0 && now - self.last_present_at < gap {
+                    self.frame_block_until = self.last_present_at + gap;
+                } else {
+                    self.render_frame();
+                }
+            }
             Signal::Config => {
                 if let Some(c) = &self.cfg_watch {
                     c.rearm();
@@ -2030,6 +2054,9 @@ fn shell_open(target: &str) {
         );
     }
 }
+
+/// The least time between two presented frames, as a fraction of the refresh period.
+const MIN_FRAME_GAP: f64 = 0.8;
 
 struct WaitPlan {
     handles: Vec<HANDLE>,
