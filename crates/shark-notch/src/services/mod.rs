@@ -18,6 +18,7 @@ pub mod aiusage;
 pub mod audio;
 pub mod btdev;
 pub mod calendar;
+pub mod claudelimits;
 pub mod clipboard;
 pub mod control;
 pub mod downloads;
@@ -43,6 +44,7 @@ pub struct Services {
     stats: Option<stats::StatsService>,
     ai_usage: Option<aiusage::AiUsageService>,
     lyrics: Option<lyrics::LyricsService>,
+    claude_limits: Option<claudelimits::ClaudeLimitsService>,
     /// The iPhone link's listener: exists only while `[phone] listen` is on.
     phone: Option<phone::PhoneService>,
     /// Started the first time the command-centre page asks for something.
@@ -70,6 +72,7 @@ impl Services {
             stats: None,
             ai_usage: None,
             lyrics: None,
+            claude_limits: None,
             phone: None,
             control: None,
             want_privacy: false,
@@ -195,6 +198,14 @@ impl Services {
             _ => {}
         }
 
+        // Claude's plan limits: the worker starts with the first request; switching the option off
+        // (or the stats module) ends it.
+        if !(cfg.module_active("stats") && cfg.stats.ai_limits)
+            && let Some(l) = self.claude_limits.take()
+        {
+            l.stop();
+        }
+
         // Lyrics: the worker starts with the first request; switching the option off ends it.
         if !(cfg.module_active("media") && cfg.media.lyrics)
             && let Some(l) = self.lyrics.take()
@@ -273,6 +284,11 @@ impl Services {
     }
 
     /// Has the command centre's worker been started? (It starts with the page's first request.)
+    /// Is the Claude limits worker running? (It only ever starts with a request.)
+    pub fn claude_limits_running(&self) -> bool {
+        self.claude_limits.is_some()
+    }
+
     /// Is the lyrics worker running? (It only ever starts with a request.)
     pub fn lyrics_running(&self) -> bool {
         self.lyrics.is_some()
@@ -363,6 +379,15 @@ impl Services {
                 }
                 true
             }
+            Command::ClaudeLimits => {
+                if self.claude_limits.is_none() {
+                    self.claude_limits = claudelimits::ClaudeLimitsService::start(self.bus.clone());
+                }
+                if let Some(l) = &self.claude_limits {
+                    l.refresh();
+                }
+                true
+            }
             Command::Lyrics(c) => {
                 if self.lyrics.is_none() {
                     self.lyrics = lyrics::LyricsService::start(self.bus.clone());
@@ -434,6 +459,9 @@ impl Services {
         }
         if let Some(d) = self.downloads.take() {
             d.stop();
+        }
+        if let Some(l) = self.claude_limits.take() {
+            l.stop();
         }
         if let Some(l) = self.lyrics.take() {
             l.stop();

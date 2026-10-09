@@ -42,10 +42,11 @@ struct Usage {
     output_tokens: Option<u64>,
 }
 
-/// `2026-10-09T03:25:21.027Z` as Unix seconds. Only UTC (`Z`) stamps are understood.
+/// `2026-10-09T03:25:21.027Z` or `2026-10-09T08:00:00.123456+05:30` as Unix seconds. A fraction of
+/// a second is ignored; the offset (`Z`, `+HH:MM`, `-HH:MM`) is applied.
 pub fn parse_time(s: &str) -> Option<i64> {
     let b = s.as_bytes();
-    if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || !s.ends_with('Z') {
+    if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' {
         return None;
     }
     let n = |r: std::ops::Range<usize>| s.get(r)?.parse::<u32>().ok();
@@ -54,7 +55,33 @@ pub fn parse_time(s: &str) -> Option<i64> {
     if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || sec > 60 {
         return None;
     }
-    Some(unix_from_civil(y as i32, mo, d, h, mi, sec))
+    let mut rest = &s[19..];
+    if let Some(frac) = rest.strip_prefix('.') {
+        let digits = frac.bytes().take_while(u8::is_ascii_digit).count();
+        if digits == 0 {
+            return None;
+        }
+        rest = &frac[digits..];
+    }
+    let offset = match rest {
+        "Z" => 0,
+        _ => {
+            let sign = match rest.as_bytes().first()? {
+                b'+' => 1,
+                b'-' => -1,
+                _ => return None,
+            };
+            let (oh, om) = (
+                rest.get(1..3)?.parse::<i64>().ok()?,
+                rest.get(4..6)?.parse::<i64>().ok()?,
+            );
+            if rest.len() != 6 || rest.as_bytes()[3] != b':' || oh > 23 || om > 59 {
+                return None;
+            }
+            sign * (oh * 3600 + om * 60)
+        }
+    };
+    Some(unix_from_civil(y as i32, mo, d, h, mi, sec) - offset)
 }
 
 /// The usage in one log line, with the id of the message it belongs to. `None` for every line that
@@ -156,12 +183,22 @@ mod tests {
             parse_time("2026-10-09T03:25:21.027Z"),
             Some(unix_from_civil(2026, 10, 9, 3, 25, 21))
         );
+        assert_eq!(
+            parse_time("2026-10-09T08:00:00.123456+05:30"),
+            Some(unix_from_civil(2026, 10, 9, 2, 30, 0))
+        );
+        assert_eq!(
+            parse_time("2026-10-09T08:00:00-02:00"),
+            Some(unix_from_civil(2026, 10, 9, 10, 0, 0))
+        );
         for bad in [
             "",
             "2026-10-09",
-            "2026-10-09T03:25:21+02:00",
+            "2026-10-09T03:25:21",
             "2026-13-09T03:25:21Z",
             "x",
+            "2026-10-09T03:25:21.Z",
+            "2026-10-09T03:25:21+0200",
         ] {
             assert_eq!(parse_time(bad), None, "{bad}");
         }

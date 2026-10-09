@@ -171,6 +171,9 @@ pub enum Command {
     Control(ControlCmd),
     Phone(PhoneCmd),
     Lyrics(LyricsCmd),
+    /// Read Claude's plan limits now (the answer arrives as an `AiLimits` event). Sent only while
+    /// the stats page is open, and the service answers at most once a minute.
+    ClaudeLimits,
     /// Stop Windows sleeping and the screen turning off (`true`), or let it again.
     KeepAwake(bool),
     /// Write one boolean into `config.toml` (the file reload applies it).

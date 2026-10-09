@@ -504,6 +504,10 @@ pub struct StatsCfg {
     /// Claude Code's token use today (read from its own session logs, nothing is sent anywhere):
     /// a line on this page and a chip on the pill while it is working.
     pub ai_usage: bool,
+    /// Claude's real plan limits (the 5-hour and weekly bars). **Off by default**: it reads the
+    /// login token Claude Code keeps in `~/.claude/.credentials.json` and sends it to
+    /// api.anthropic.com, an undocumented endpoint, a few times an hour while the page is open.
+    pub ai_limits: bool,
 }
 
 impl Default for StatsCfg {
@@ -516,6 +520,7 @@ impl Default for StatsCfg {
             battery_hud: true,
             devices: true,
             ai_usage: true,
+            ai_limits: false,
         }
     }
 }
@@ -1224,6 +1229,7 @@ net_bits = false               # network speeds in Mbps instead of MB/s
 battery_hud = true              # a short banner when the charger is plugged in or removed, and when the battery is full
 devices = true                  # a strip with connected Bluetooth devices and their batteries (read while the page is open)
 ai_usage = true                # Claude Code's token use today, read from ~/.claude/projects (never sent anywhere): a line here and a chip while it works
+ai_limits = false              # Claude's real 5-hour and weekly limits: reads the login token in ~/.claude/.credentials.json and sends it to api.anthropic.com (undocumented endpoint) while this page is open
 
 [control]
 enabled = true                 # volume, brightness, Wi-Fi, Bluetooth, a snip button and Focus; see docs/CONTROL.md

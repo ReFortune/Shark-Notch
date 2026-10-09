@@ -5,6 +5,7 @@ pub mod aiusage;
 pub mod bus;
 pub mod chart;
 pub mod civil;
+pub mod claudelimits;
 pub mod clipstore;
 pub mod color;
 pub mod compose;

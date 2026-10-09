@@ -2608,6 +2608,16 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
                 .send(Source::Local, EventKind::Power(reading(true)));
         }
         Act::PowerCheck => {
+            // Claude's limits read a login token and call the network: off by default, and the
+            // self-test never turns that on.
+            let started = a.services.claude_limits_running();
+            st.say(format!(
+                "claude limits: off by default ({}), the reader never started: {}",
+                !a.cfg.stats.ai_limits, !started
+            ));
+            if !a.cfg.stats.ai_limits && started {
+                st.fail("claude limits: the reader ran although [stats] ai_limits is off".into());
+            }
             // Lyrics are opt-in: with the default configuration nothing was ever looked up, and the
             // self-test does not turn them on (that would send the test tracks' names to lrclib.net).
             let asked = a.services.lyrics_running();

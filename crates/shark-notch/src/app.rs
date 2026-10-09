@@ -1314,7 +1314,7 @@ impl App {
                 self.services.command(&c);
             }
             Command::Phone(PhoneCmd::CopyToken) => self.copy_phone_token(),
-            Command::Phone(_) | Command::Lyrics(_) => {
+            Command::Phone(_) | Command::Lyrics(_) | Command::ClaudeLimits => {
                 self.services.command(&c);
             }
         }

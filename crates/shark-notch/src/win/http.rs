@@ -77,6 +77,19 @@ pub fn get_https_accepting(
     max_bytes: usize,
     accept: &str,
 ) -> Result<Vec<u8>, String> {
+    get_https_with(host, port, path, max_bytes, accept, &[])
+}
+
+/// Like [`get_https_accepting`], with more request headers (`name`, `value`). The values are sent
+/// as given and are never logged here.
+pub fn get_https_with(
+    host: &str,
+    port: u16,
+    path: &str,
+    max_bytes: usize,
+    accept: &str,
+    extra: &[(&str, &str)],
+) -> Result<Vec<u8>, String> {
     let started = Instant::now();
     unsafe {
         let agent = wide(concat!("SharkNotch/", env!("CARGO_PKG_VERSION")));
@@ -110,7 +123,15 @@ pub fn get_https_accepting(
             ),
             "creating the request",
         )?;
-        let headers: Vec<u16> = format!("Accept: {accept}\r\n").encode_utf16().collect();
+        let mut head = format!("Accept: {accept}\r\n");
+        for (name, value) in extra {
+            // A header may not carry a line break (that would be a second header).
+            if name.contains(['\r', '\n', ':']) || value.contains(['\r', '\n']) {
+                return Err("a request header was not valid".into());
+            }
+            head.push_str(&format!("{name}: {value}\r\n"));
+        }
+        let headers: Vec<u16> = head.encode_utf16().collect();
         WinHttpSendRequest(req.0, Some(&headers), None, 0, 0, 0).map_err(|e| describe(&e))?;
         WinHttpReceiveResponse(req.0, std::ptr::null_mut()).map_err(|e| describe(&e))?;
 

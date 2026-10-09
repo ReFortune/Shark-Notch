@@ -310,6 +310,8 @@ pub enum EventKind {
     AiUsage(crate::aiusage::Totals),
     /// The lyrics of a track, as LRCLIB answered (opt-in; see `crate::lyrics`).
     Lyrics(Arc<crate::lyrics::LyricsReply>),
+    /// Claude's plan limits (opt-in; see `crate::claudelimits`).
+    AiLimits(Arc<crate::claudelimits::LimitsState>),
     /// The command centre's controls, as read (answer to `ControlCmd::Refresh` and to changes).
     Control(Arc<ControlState>),
     /// The state of the iPhone link.
@@ -342,13 +344,14 @@ pub enum Kind {
     Power,
     AiUsage,
     Lyrics,
+    AiLimits,
     Control,
     PhoneLink,
     Inbound,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 23] = [
+    pub const ALL: [Kind; 24] = [
         Kind::ConfigChanged,
         Kind::ThemeChanged,
         Kind::Suspended,
@@ -369,6 +372,7 @@ impl Kind {
         Kind::Power,
         Kind::AiUsage,
         Kind::Lyrics,
+        Kind::AiLimits,
         Kind::Control,
         Kind::PhoneLink,
         Kind::Inbound,
@@ -398,6 +402,7 @@ impl EventKind {
             EventKind::Power(_) => Kind::Power,
             EventKind::AiUsage(_) => Kind::AiUsage,
             EventKind::Lyrics(_) => Kind::Lyrics,
+            EventKind::AiLimits(_) => Kind::AiLimits,
             EventKind::Control(_) => Kind::Control,
             EventKind::PhoneLink(_) => Kind::PhoneLink,
             EventKind::Inbound(_) => Kind::Inbound,
@@ -512,6 +517,7 @@ mod tests {
                 devices: None,
             })),
             EventKind::AiUsage(crate::aiusage::Totals::default()),
+            EventKind::AiLimits(Arc::new(crate::claudelimits::LimitsState::Failed)),
             EventKind::Lyrics(Arc::new(crate::lyrics::LyricsReply {
                 track: "a-b".into(),
                 lyrics: crate::lyrics::Lyrics::NotFound,
