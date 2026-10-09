@@ -308,6 +308,8 @@ pub enum EventKind {
     Power(PowerStatus),
     /// Claude Code's token use today, from its own session logs (sent when they grow).
     AiUsage(crate::aiusage::Totals),
+    /// The lyrics of a track, as LRCLIB answered (opt-in; see `crate::lyrics`).
+    Lyrics(Arc<crate::lyrics::LyricsReply>),
     /// The command centre's controls, as read (answer to `ControlCmd::Refresh` and to changes).
     Control(Arc<ControlState>),
     /// The state of the iPhone link.
@@ -339,13 +341,14 @@ pub enum Kind {
     Stats,
     Power,
     AiUsage,
+    Lyrics,
     Control,
     PhoneLink,
     Inbound,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 22] = [
+    pub const ALL: [Kind; 23] = [
         Kind::ConfigChanged,
         Kind::ThemeChanged,
         Kind::Suspended,
@@ -365,6 +368,7 @@ impl Kind {
         Kind::Stats,
         Kind::Power,
         Kind::AiUsage,
+        Kind::Lyrics,
         Kind::Control,
         Kind::PhoneLink,
         Kind::Inbound,
@@ -393,6 +397,7 @@ impl EventKind {
             EventKind::Stats(_) => Kind::Stats,
             EventKind::Power(_) => Kind::Power,
             EventKind::AiUsage(_) => Kind::AiUsage,
+            EventKind::Lyrics(_) => Kind::Lyrics,
             EventKind::Control(_) => Kind::Control,
             EventKind::PhoneLink(_) => Kind::PhoneLink,
             EventKind::Inbound(_) => Kind::Inbound,
@@ -507,6 +512,10 @@ mod tests {
                 devices: None,
             })),
             EventKind::AiUsage(crate::aiusage::Totals::default()),
+            EventKind::Lyrics(Arc::new(crate::lyrics::LyricsReply {
+                track: "a-b".into(),
+                lyrics: crate::lyrics::Lyrics::NotFound,
+            })),
             EventKind::Power(PowerStatus {
                 battery: BatteryInfo {
                     percent: 50,

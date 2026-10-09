@@ -121,6 +121,19 @@ pub enum ControlCmd {
     OpenAirplaneSettings,
 }
 
+/// Operations on the lyrics lookup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LyricsCmd {
+    /// Ask LRCLIB for a track's lyrics; the answer arrives as a `Lyrics` event tagged `track`.
+    Fetch {
+        track: Arc<str>,
+        artist: Arc<str>,
+        title: Arc<str>,
+        album: Arc<str>,
+        duration_s: u32,
+    },
+}
+
 /// Operations on the iPhone link.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PhoneCmd {
@@ -157,6 +170,7 @@ pub enum Command {
     Stats(StatsCmd),
     Control(ControlCmd),
     Phone(PhoneCmd),
+    Lyrics(LyricsCmd),
     /// Stop Windows sleeping and the screen turning off (`true`), or let it again.
     KeepAwake(bool),
     /// Write one boolean into `config.toml` (the file reload applies it).

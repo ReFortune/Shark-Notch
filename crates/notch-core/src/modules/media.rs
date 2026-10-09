@@ -20,7 +20,10 @@ use crate::events::{Event, EventKind, EventMask, Kind, MediaSnapshot, Source};
 use crate::geom::{Rect, Size, Vec2};
 use crate::icons::Icon;
 use crate::input::Input;
-use crate::module::{Audio, Command, Cx, DrawCx, MediaCmd, Module, ModuleId, Visibility};
+use crate::lyrics::{self, Lyrics};
+use crate::module::{
+    Audio, Command, Cx, DrawCx, LyricsCmd, MediaCmd, Module, ModuleId, Visibility,
+};
 use crate::theme::Theme;
 
 const HIT_PREV: HitId = HitId(1);
@@ -185,6 +188,10 @@ pub struct Media {
     /// Cleared once the platform reports that no audio device can be metered.
     meter_ok: bool,
     polls: u32,
+    /// Lyrics (opt-in): the page is open, the track we asked for, and what came back for it.
+    expanded: bool,
+    asked: Option<Arc<str>>,
+    lyrics: Option<Lyrics>,
 }
 
 impl Media {
@@ -203,6 +210,9 @@ impl Media {
             last_frame: 0.0,
             meter_ok: true,
             polls: 0,
+            expanded: false,
+            asked: None,
+            lyrics: None,
         }
     }
 
@@ -214,6 +224,46 @@ impl Media {
         match self.optimistic {
             Some((p, until)) if now < until => p,
             _ => self.snap.playing,
+        }
+    }
+
+    /// Ask for the current track's lyrics once, when they are wanted: the option is on, the page is
+    /// open and this track has not been asked for yet.
+    fn ask_for_lyrics(&mut self, cx: &mut Cx) {
+        let s = &self.snap;
+        if !self.cfg.lyrics || !self.expanded || s.title.is_empty() || s.artist.is_empty() {
+            return;
+        }
+        let key: Arc<str> = lyrics::track_key(&s.artist, &s.title).into();
+        if self.asked.as_ref() == Some(&key) {
+            return;
+        }
+        self.asked = Some(key.clone());
+        self.lyrics = None;
+        cx.command(Command::Lyrics(LyricsCmd::Fetch {
+            track: key,
+            artist: s.artist.clone(),
+            title: s.title.clone(),
+            album: s.album.clone(),
+            duration_s: (s.duration_ms / 1000) as u32,
+        }));
+    }
+
+    /// The line being sung, drawn under the controls.
+    fn draw_lyric(&self, cv: &mut Canvas, r: Rect, now: f64) {
+        let th = *cv.theme;
+        let (text, color) = match &self.lyrics {
+            Some(Lyrics::Synced(lines)) => {
+                let line = lyrics::current(lines, self.position_ms(now)).map(|i| &lines[i].1);
+                (line.cloned().unwrap_or_default(), th.text)
+            }
+            Some(Lyrics::Untimed) => ("No timed lyrics".to_string(), th.text_faint),
+            Some(Lyrics::Instrumental) => ("Instrumental".to_string(), th.text_faint),
+            Some(Lyrics::NotFound) => ("No lyrics found".to_string(), th.text_faint),
+            Some(Lyrics::Failed) | None => (String::new(), th.text_faint),
+        };
+        if !text.is_empty() {
+            cv.text(r, text, TextStyle::body().align(Align::Center), color);
         }
     }
 
@@ -315,7 +365,7 @@ impl Module for Media {
     }
 
     fn subscriptions(&self) -> EventMask {
-        EventMask::of(&[Kind::MediaChanged])
+        EventMask::of(&[Kind::MediaChanged, Kind::Lyrics])
     }
 
     /// 1 Hz while the page is open: advance the clock labels when nothing else is drawing, and resync
@@ -334,7 +384,7 @@ impl Module for Media {
     }
 
     fn expanded_size(&self) -> Size {
-        Size::new(424.0, 152.0)
+        Size::new(424.0, 152.0 + if self.cfg.lyrics { 24.0 } else { 0.0 })
     }
 
     fn peek_size(&self) -> Option<Size> {
@@ -342,6 +392,13 @@ impl Module for Media {
     }
 
     fn on_event(&mut self, ev: &Event, cx: &mut Cx) {
+        if let EventKind::Lyrics(reply) = &ev.kind {
+            if self.cfg.lyrics && self.asked.as_deref() == Some(&*reply.track) {
+                self.lyrics = Some(reply.lyrics.clone());
+                cx.request_redraw();
+            }
+            return;
+        }
         let EventKind::MediaChanged(new) = &ev.kind else {
             return;
         };
@@ -361,6 +418,7 @@ impl Module for Media {
         self.snap = new.clone();
         self.received_at = cx.now;
         cx.request_redraw();
+        self.ask_for_lyrics(cx);
         if changed_track && !first && new.playing && self.cfg.peek_on_change {
             cx.peek(f64::from(self.cfg.peek_secs));
         }
@@ -368,6 +426,10 @@ impl Module for Media {
 
     fn on_config(&mut self, cfg: &Config, cx: &mut Cx) {
         self.cfg = cfg.media.clone();
+        if !self.cfg.lyrics {
+            self.asked = None;
+            self.lyrics = None;
+        }
         cx.request_redraw();
     }
 
@@ -377,8 +439,11 @@ impl Module for Media {
                 self.polls = 0;
                 // Correct any drift and pick up a thumbnail that arrived after the track did.
                 cx.command(Command::Media(MediaCmd::Refresh));
+                self.expanded = true;
+                self.ask_for_lyrics(cx);
             }
             _ => {
+                self.expanded = false;
                 self.hover = None;
                 self.scrub = None;
                 self.bars = [0.0; BARS];
@@ -393,6 +458,7 @@ impl Module for Media {
     }
 
     fn on_poll(&mut self, cx: &mut Cx) {
+        self.ask_for_lyrics(cx);
         self.polls += 1;
         if self.snap.playing && self.scrub.is_none() && !self.wants_frames() {
             cx.request_redraw();
@@ -626,6 +692,10 @@ impl Module for Media {
             cv.hit(lay.play, HIT_PLAY, CursorKind::Hand);
         }
         self.button(cv, lay.next, Icon::Next, HIT_NEXT, self.snap.can_next, &th);
+        if self.cfg.lyrics {
+            let r = Rect::new(area.x, area.bottom() - 20.0, area.w, 20.0);
+            self.draw_lyric(cv, r, now);
+        }
     }
 }
 
@@ -1258,5 +1328,115 @@ mod tests {
         // Guards the `&Arc<str>` -> Text conversions used for the title lines.
         let t: Text = (&Arc::<str>::from("x")).into();
         assert_eq!(t.as_str(), "x");
+    }
+
+    fn lyrics_t() -> T {
+        let mut t = T::new();
+        t.media = Media::new(MediaCfg {
+            lyrics: true,
+            ..MediaCfg::default()
+        });
+        t
+    }
+
+    fn open(t: &mut T, now: f64) {
+        let mut cx = Cx::for_test(now, &t.env, &t.theme, &t.cfg, &mut t.out);
+        t.media.on_visibility(Visibility::Expanded, &mut cx);
+    }
+
+    fn reply(t: &mut T, track: &str, lyrics: Lyrics) {
+        let ev = Event::new(
+            Source::Local,
+            EventKind::Lyrics(Arc::new(lyrics::LyricsReply {
+                track: track.into(),
+                lyrics,
+            })),
+        );
+        let mut cx = Cx::for_test(0.0, &t.env, &t.theme, &t.cfg, &mut t.out);
+        t.media.on_event(&ev, &mut cx);
+    }
+
+    fn fetches(t: &mut T) -> Vec<Arc<str>> {
+        t.commands()
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::Lyrics(LyricsCmd::Fetch { track, .. }) => Some(track),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn lyrics_are_off_by_default_and_then_nothing_is_ever_asked() {
+        let mut t = T::new();
+        t.send(1.0, snap("Song", true));
+        open(&mut t, 1.0);
+        let mut cx = Cx::for_test(2.0, &t.env, &t.theme, &t.cfg, &mut t.out);
+        t.media.on_poll(&mut cx);
+        assert!(fetches(&mut t).is_empty());
+        assert_eq!(t.media.expanded_size().h, 152.0);
+        assert!(!MediaCfg::default().lyrics);
+    }
+
+    #[test]
+    fn a_track_is_asked_for_once_when_the_page_is_open() {
+        let mut t = lyrics_t();
+        t.send(1.0, snap("Song", true));
+        assert!(fetches(&mut t).is_empty(), "the page is closed: no request");
+        open(&mut t, 2.0);
+        assert_eq!(fetches(&mut t), vec![Arc::from("Artist\nSong")]);
+        let mut cx = Cx::for_test(3.0, &t.env, &t.theme, &t.cfg, &mut t.out);
+        t.media.on_poll(&mut cx);
+        assert!(fetches(&mut t).is_empty(), "same track: not again");
+        t.send(4.0, snap("Other", true));
+        assert_eq!(fetches(&mut t), vec![Arc::from("Artist\nOther")]);
+        assert_eq!(t.media.expanded_size().h, 176.0);
+    }
+
+    #[test]
+    fn the_line_follows_the_position_and_a_late_reply_for_another_track_is_ignored() {
+        let mut t = lyrics_t();
+        t.send(0.0, snap("Song", true)); // 30 s in, extrapolated while playing
+        open(&mut t, 0.0);
+        fetches(&mut t);
+        let lines = vec![
+            (10_000, "early".to_string()),
+            (30_000, "now singing".to_string()),
+            (50_000, "later".to_string()),
+        ];
+        reply(&mut t, "Artist\nOld song", Lyrics::Synced(lines.clone()));
+        assert!(!texts(&t.draw(0.0, Audio::Idle)).contains(&"now singing".to_string()));
+        reply(&mut t, "Artist\nSong", Lyrics::Synced(lines));
+        assert!(texts(&t.draw(0.5, Audio::Idle)).contains(&"now singing".to_string()));
+        assert!(
+            texts(&t.draw(25.0, Audio::Idle)).contains(&"later".to_string()),
+            "55 s in"
+        );
+        // Other outcomes say so, or stay quiet.
+        reply(&mut t, "Artist\nSong", Lyrics::NotFound);
+        assert!(texts(&t.draw(25.0, Audio::Idle)).contains(&"No lyrics found".to_string()));
+        reply(&mut t, "Artist\nSong", Lyrics::Failed);
+        assert!(
+            !texts(&t.draw(25.0, Audio::Idle))
+                .iter()
+                .any(|s| s.contains("lyrics"))
+        );
+    }
+
+    #[test]
+    fn switching_lyrics_off_forgets_them() {
+        let mut t = lyrics_t();
+        t.send(0.0, snap("Song", true));
+        open(&mut t, 0.0);
+        fetches(&mut t);
+        reply(&mut t, "Artist\nSong", Lyrics::Instrumental);
+        let mut cfg = Config::default();
+        cfg.media.lyrics = false;
+        let mut cx = Cx::for_test(1.0, &t.env, &t.theme, &cfg, &mut t.out);
+        t.media.on_config(&cfg, &mut cx);
+        assert!(t.media.lyrics.is_none() && t.media.asked.is_none());
+        // And a reply that arrives anyway is not kept.
+        reply(&mut t, "Artist\nSong", Lyrics::Instrumental);
+        assert!(t.media.lyrics.is_none());
     }
 }

@@ -24,6 +24,7 @@ pub mod icons;
 pub mod ics;
 pub mod image;
 pub mod input;
+pub mod lyrics;
 pub mod module;
 pub mod modules;
 pub mod notifsync;

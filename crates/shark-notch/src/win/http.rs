@@ -60,9 +60,26 @@ fn describe(e: &windows::core::Error) -> String {
 
 /// `GET https://host:port/path`, at most `max_bytes` of body. Errors are short descriptions.
 pub fn get_https(host: &str, port: u16, path: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
+    get_https_accepting(
+        host,
+        port,
+        path,
+        max_bytes,
+        "text/calendar, text/plain;q=0.5, */*;q=0.1",
+    )
+}
+
+/// Like [`get_https`], saying which media types the caller wants (the `Accept` header).
+pub fn get_https_accepting(
+    host: &str,
+    port: u16,
+    path: &str,
+    max_bytes: usize,
+    accept: &str,
+) -> Result<Vec<u8>, String> {
     let started = Instant::now();
     unsafe {
-        let agent = wide("SharkNotch/0.1");
+        let agent = wide(concat!("SharkNotch/", env!("CARGO_PKG_VERSION")));
         let session = Handle::new(
             WinHttpOpen(
                 PCWSTR(agent.as_ptr()),
@@ -93,9 +110,7 @@ pub fn get_https(host: &str, port: u16, path: &str, max_bytes: usize) -> Result<
             ),
             "creating the request",
         )?;
-        let headers: Vec<u16> = "Accept: text/calendar, text/plain;q=0.5, */*;q=0.1\r\n"
-            .encode_utf16()
-            .collect();
+        let headers: Vec<u16> = format!("Accept: {accept}\r\n").encode_utf16().collect();
         WinHttpSendRequest(req.0, Some(&headers), None, 0, 0, 0).map_err(|e| describe(&e))?;
         WinHttpReceiveResponse(req.0, std::ptr::null_mut()).map_err(|e| describe(&e))?;
 

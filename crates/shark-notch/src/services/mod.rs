@@ -21,6 +21,7 @@ pub mod calendar;
 pub mod clipboard;
 pub mod control;
 pub mod downloads;
+pub mod lyrics;
 pub mod media;
 pub mod phone;
 pub mod privacy;
@@ -41,6 +42,7 @@ pub struct Services {
     downloads: Option<downloads::DownloadsService>,
     stats: Option<stats::StatsService>,
     ai_usage: Option<aiusage::AiUsageService>,
+    lyrics: Option<lyrics::LyricsService>,
     /// The iPhone link's listener: exists only while `[phone] listen` is on.
     phone: Option<phone::PhoneService>,
     /// Started the first time the command-centre page asks for something.
@@ -67,6 +69,7 @@ impl Services {
             downloads: None,
             stats: None,
             ai_usage: None,
+            lyrics: None,
             phone: None,
             control: None,
             want_privacy: false,
@@ -192,6 +195,13 @@ impl Services {
             _ => {}
         }
 
+        // Lyrics: the worker starts with the first request; switching the option off ends it.
+        if !(cfg.module_active("media") && cfg.media.lyrics)
+            && let Some(l) = self.lyrics.take()
+        {
+            l.stop();
+        }
+
         // Claude Code's token use: read only when the stats module shows it.
         let want_ai = cfg.module_active("stats") && cfg.stats.ai_usage;
         match (want_ai, self.ai_usage.is_some()) {
@@ -263,6 +273,11 @@ impl Services {
     }
 
     /// Has the command centre's worker been started? (It starts with the page's first request.)
+    /// Is the lyrics worker running? (It only ever starts with a request.)
+    pub fn lyrics_running(&self) -> bool {
+        self.lyrics.is_some()
+    }
+
     pub fn control_running(&self) -> bool {
         self.control.is_some()
     }
@@ -348,6 +363,15 @@ impl Services {
                 }
                 true
             }
+            Command::Lyrics(c) => {
+                if self.lyrics.is_none() {
+                    self.lyrics = lyrics::LyricsService::start(self.bus.clone());
+                }
+                if let Some(l) = &self.lyrics {
+                    l.command(c);
+                }
+                true
+            }
             Command::Phone(c) => {
                 // Putting the token on the clipboard needs the app's window: `App::exec` does it.
                 if *c == PhoneCmd::CopyToken {
@@ -410,6 +434,9 @@ impl Services {
         }
         if let Some(d) = self.downloads.take() {
             d.stop();
+        }
+        if let Some(l) = self.lyrics.take() {
+            l.stop();
         }
         if let Some(s) = self.ai_usage.take() {
             s.stop();

@@ -292,6 +292,10 @@ pub struct MediaCfg {
     pub peek_secs: f32,
     /// Level-reactive bars on the page — animated only while music is playing *and* the page is open.
     pub visualizer: bool,
+    /// Show the line being sung under the transport controls. **Off by default**: it asks
+    /// lrclib.net for each track's lyrics (the artist, title, album and length go over the
+    /// network) while the page is open, and LRCLIB publishes no terms about its lyrics.
+    pub lyrics: bool,
 }
 
 impl Default for MediaCfg {
@@ -301,6 +305,7 @@ impl Default for MediaCfg {
             peek_on_change: true,
             peek_secs: 2.8,
             visualizer: true,
+            lyrics: false,
         }
     }
 }
@@ -1158,6 +1163,7 @@ enabled = true                 # follows whatever Windows considers the current 
 peek_on_change = true          # briefly show the new track while the notch is collapsed
 peek_secs = 2.8
 visualizer = true              # level bars; frames are only drawn while playing AND the page is open
+lyrics = false                # opt-in: the line being sung, from lrclib.net (artist, title, album and length are sent to it while the page is open)
 
 [clipboard]
 enabled = true

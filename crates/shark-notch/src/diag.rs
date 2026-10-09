@@ -2608,6 +2608,16 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
                 .send(Source::Local, EventKind::Power(reading(true)));
         }
         Act::PowerCheck => {
+            // Lyrics are opt-in: with the default configuration nothing was ever looked up, and the
+            // self-test does not turn them on (that would send the test tracks' names to lrclib.net).
+            let asked = a.services.lyrics_running();
+            st.say(format!(
+                "lyrics: off by default ({}), the lookup worker was never started: {}",
+                !a.cfg.media.lyrics, !asked
+            ));
+            if !a.cfg.media.lyrics && asked {
+                st.fail("lyrics: a lookup ran although [media] lyrics is off".into());
+            }
             // Claude Code's logs: when this PC has them, the reader must have reported totals.
             let has_logs = std::env::var_os("USERPROFILE")
                 .map(|h| std::path::PathBuf::from(h).join(".claude").join("projects"))

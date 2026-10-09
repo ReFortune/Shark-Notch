@@ -21,7 +21,7 @@ matter right now (a microphone in use, a timer, the next meeting, a download, yo
 
 | Page | What it is | More |
 |------|-----------|------|
-| **Media** | Whatever Windows thinks is playing: art, title, seek bar, controls, level bars | |
+| **Media** | Whatever Windows thinks is playing: art, title, seek bar, controls, level bars; optionally (off by default) the line being sung, from lrclib.net | [`docs/MEDIA.md`](docs/MEDIA.md) |
 | **Clipboard** | History of text, links and images; pin; click to copy back; items from your iPhone are labelled | |
 | **Shelf** | Drop files on the notch (a drag toward the top opens it), drag them out again. It holds *references*: your files are never moved or deleted | |
 | **Notifications** | Banners your iPhone shortcuts send, as a pop-up and a short list, with a "missed" badge after a fullscreen session. Windows' own notifications are not read (Windows allows that only to apps with package identity) | [`docs/IPHONE_SHORTCUTS.md`](docs/IPHONE_SHORTCUTS.md) |
