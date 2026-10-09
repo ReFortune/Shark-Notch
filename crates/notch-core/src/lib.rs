@@ -1,6 +1,7 @@
 //! Portable core of Shark Notch. Everything here is plain Rust with no OS calls so that it can be
 //! unit-tested on any host; the Windows binary (`shark-notch`) only supplies OS glue and pixels.
 
+pub mod aiusage;
 pub mod bus;
 pub mod chart;
 pub mod civil;

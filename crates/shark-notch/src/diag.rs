@@ -2608,6 +2608,17 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
                 .send(Source::Local, EventKind::Power(reading(true)));
         }
         Act::PowerCheck => {
+            // Claude Code's logs: when this PC has them, the reader must have reported totals.
+            let has_logs = std::env::var_os("USERPROFILE")
+                .map(|h| std::path::PathBuf::from(h).join(".claude").join("projects"))
+                .is_some_and(|p| p.is_dir());
+            let reports = a.bus_counts[Kind::AiUsage as usize];
+            st.say(format!(
+                "claude code usage: logs folder present: {has_logs}; totals reports so far: {reports}"
+            ));
+            if a.cfg.stats.ai_usage && has_logs && reports == 0 {
+                st.fail("claude code usage: the reader never reported".into());
+            }
             // Whatever Bluetooth devices this machine has connected, read the way the stats page does.
             let devices = crate::services::btdev::connected();
             st.say(format!(

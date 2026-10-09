@@ -14,6 +14,7 @@ use notch_core::module::{Command, ControlCmd, PhoneCmd};
 
 use crate::win::dragdrop::ShelfSlot;
 
+pub mod aiusage;
 pub mod audio;
 pub mod btdev;
 pub mod calendar;
@@ -39,6 +40,7 @@ pub struct Services {
     privacy: Option<privacy::PrivacyService>,
     downloads: Option<downloads::DownloadsService>,
     stats: Option<stats::StatsService>,
+    ai_usage: Option<aiusage::AiUsageService>,
     /// The iPhone link's listener: exists only while `[phone] listen` is on.
     phone: Option<phone::PhoneService>,
     /// Started the first time the command-centre page asks for something.
@@ -64,6 +66,7 @@ impl Services {
             privacy: None,
             downloads: None,
             stats: None,
+            ai_usage: None,
             phone: None,
             control: None,
             want_privacy: false,
@@ -183,6 +186,18 @@ impl Services {
             (true, false) => self.stats = stats::StatsService::start(self.bus.clone()),
             (false, true) => {
                 if let Some(s) = self.stats.take() {
+                    s.stop();
+                }
+            }
+            _ => {}
+        }
+
+        // Claude Code's token use: read only when the stats module shows it.
+        let want_ai = cfg.module_active("stats") && cfg.stats.ai_usage;
+        match (want_ai, self.ai_usage.is_some()) {
+            (true, false) => self.ai_usage = aiusage::AiUsageService::start(self.bus.clone()),
+            (false, true) => {
+                if let Some(s) = self.ai_usage.take() {
                     s.stop();
                 }
             }
@@ -395,6 +410,9 @@ impl Services {
         }
         if let Some(d) = self.downloads.take() {
             d.stop();
+        }
+        if let Some(s) = self.ai_usage.take() {
+            s.stop();
         }
         if let Some(s) = self.stats.take() {
             s.stop();

@@ -8,13 +8,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::aiusage::{Totals, fmt_tokens};
 use crate::color::Color;
 use crate::config::{Config, StatsCfg};
 use crate::draw::{Align, Canvas, Text, TextStyle, Weight};
 use crate::events::{BtDevice, Event, EventKind, EventMask, Kind, PowerStatus, StatsSnapshot};
 use crate::geom::{Rect, Size};
 use crate::icons::Icon;
-use crate::module::{Command, Cx, DrawCx, Module, ModuleId, StatsCmd, Visibility};
+use crate::module::{Command, Cx, DrawCx, Env, Module, ModuleId, StatsCmd, Visibility};
 use crate::stats::{History, fmt_memory, fmt_rate, fmt_remaining};
 
 /// Samples shown per chart (a minute at the default one reading per second).
@@ -23,6 +24,8 @@ const GAP: f32 = 8.0;
 const BATTERY_H: f32 = 30.0;
 /// Bluetooth devices named in the strip (the rest are left out).
 const MAX_DEVICES: usize = 3;
+/// Width of the pill chip that says Claude Code is working.
+const AI_CHIP_W: f32 = 60.0;
 /// The network chart never zooms in on background noise: its scale is at least this (bytes/s).
 const NET_FLOOR: f32 = 128.0 * 1024.0;
 /// How long the plug-in / full-charge banner stays.
@@ -53,6 +56,9 @@ pub struct Stats {
     /// The last power reading Windows announced (the baseline for the plug-in / full banners).
     power: Option<PowerStatus>,
     banner: Option<Banner>,
+    /// Claude Code's token use today, as last reported, and whether it is working right now.
+    ai: Option<Totals>,
+    ai_chip: bool,
     suspended: bool,
 }
 
@@ -80,6 +86,8 @@ impl Stats {
             latest: None,
             power: None,
             banner: None,
+            ai: None,
+            ai_chip: false,
             suspended: false,
         }
     }
@@ -106,6 +114,17 @@ impl Stats {
         if let Some(b) = banner {
             self.banner = Some(b);
             cx.peek(BANNER_SECS);
+            cx.request_redraw();
+        }
+    }
+
+    /// Is Claude Code working (its logs grew within the last minute and a half)?
+    fn refresh_ai_chip(&mut self, cx: &mut Cx) {
+        let active = self
+            .ai
+            .is_some_and(|t| t.last_at > 0 && cx.env.unix - t.last_at < Self::AI_ACTIVE_SECS);
+        if active != self.ai_chip {
+            self.ai_chip = active;
             cx.request_redraw();
         }
     }
@@ -171,13 +190,43 @@ impl Stats {
         }
     }
 
-    /// Height the Bluetooth devices strip adds to the page (0 when it is switched off).
-    fn devices_extra(&self) -> f32 {
-        if self.cfg.devices {
-            BATTERY_H + GAP
-        } else {
-            0.0
-        }
+    /// Height the optional strips (Bluetooth devices, Claude Code) add to the page.
+    fn extra_height(&self) -> f32 {
+        (BATTERY_H + GAP) * (usize::from(self.cfg.devices) + usize::from(self.cfg.ai_usage)) as f32
+    }
+
+    /// How long Claude Code counts as "working" after its logs last grew.
+    const AI_ACTIVE_SECS: i64 = 90;
+
+    fn draw_ai(&self, cv: &mut Canvas, r: Rect) {
+        let th = *cv.theme;
+        cv.squircle(r, 10.0, th.surface);
+        cv.text(
+            Rect::new(r.x + 12.0, r.y, 86.0, r.h),
+            "Claude Code",
+            TextStyle::new(11.5, Weight::SemiBold),
+            th.text_dim,
+        );
+        let (text, color) = match self.ai {
+            None => ("…".to_string(), th.text_faint),
+            Some(t) if t.messages == 0 => ("Nothing today".to_string(), th.text_faint),
+            Some(t) => (
+                format!(
+                    "{} out · {} in · {} message{} today",
+                    fmt_tokens(t.output),
+                    fmt_tokens(t.input),
+                    t.messages,
+                    if t.messages == 1 { "" } else { "s" }
+                ),
+                th.text,
+            ),
+        };
+        cv.text(
+            Rect::new(r.x + 100.0, r.y, r.w - 110.0, r.h),
+            text,
+            TextStyle::caption(),
+            color,
+        );
     }
 
     fn draw_devices(&self, cv: &mut Canvas, r: Rect, devices: Option<&[BtDevice]>) {
@@ -316,7 +365,7 @@ impl Module for Stats {
     }
 
     fn subscriptions(&self) -> EventMask {
-        EventMask::of(&[Kind::Stats, Kind::Power, Kind::Suspended])
+        EventMask::of(&[Kind::Stats, Kind::Power, Kind::Suspended, Kind::AiUsage])
     }
 
     /// Honoured only while the page is on screen: this is the only thing that ever measures.
@@ -327,7 +376,42 @@ impl Module for Stats {
     }
 
     fn expanded_size(&self) -> Size {
-        Size::new(424.0, 232.0 + self.devices_extra())
+        Size::new(424.0, 232.0 + self.extra_height())
+    }
+
+    fn chip_width(&self) -> Option<f32> {
+        (self.cfg.ai_usage && self.ai_chip).then_some(AI_CHIP_W)
+    }
+
+    fn chip_priority(&self) -> i32 {
+        25
+    }
+
+    fn draw_chip(&mut self, cv: &mut Canvas, area: Rect, _dx: &DrawCx) {
+        let th = *cv.theme;
+        let icon = Rect::new(area.x, area.center().y - 8.0, 16.0, 16.0);
+        cv.icon(Icon::Pulse, icon, th.accent);
+        cv.text(
+            Rect::new(
+                icon.right() + 4.0,
+                area.y,
+                area.right() - icon.right() - 4.0,
+                area.h,
+            ),
+            fmt_tokens(self.ai.map_or(0, |t| t.output)),
+            TextStyle::new(12.0, Weight::SemiBold).tabular(),
+            th.text,
+        );
+    }
+
+    /// When the chip should go away: a moment after Claude Code's logs stopped growing.
+    fn next_wake(&self, now: f64, env: &Env) -> Option<f64> {
+        let last = self.ai.filter(|_| self.ai_chip)?.last_at;
+        Some(now + (last + Self::AI_ACTIVE_SECS - env.unix).max(0) as f64 + 0.5)
+    }
+
+    fn on_tick(&mut self, cx: &mut Cx) {
+        self.refresh_ai_chip(cx);
     }
 
     fn peek_size(&self) -> Option<Size> {
@@ -405,6 +489,11 @@ impl Module for Stats {
             }
             EventKind::Power(p) => self.on_power(*p, cx),
             EventKind::Suspended(on) => self.suspended = *on,
+            EventKind::AiUsage(t) => {
+                self.ai = Some(*t);
+                self.refresh_ai_chip(cx);
+                cx.request_redraw();
+            }
             _ => {}
         }
     }
@@ -422,7 +511,7 @@ impl Module for Stats {
     fn draw_expanded(&mut self, cv: &mut Canvas, area: Rect, _dx: &DrawCx) {
         let th = *cv.theme;
         let tile_w = (area.w - GAP) * 0.5;
-        let tile_h = ((area.h - BATTERY_H - self.devices_extra() - 2.0 * GAP) * 0.5).max(40.0);
+        let tile_h = ((area.h - BATTERY_H - self.extra_height() - 2.0 * GAP) * 0.5).max(40.0);
         let at = |col: f32, row: f32| {
             Rect::new(
                 area.x + col * (tile_w + GAP),
@@ -515,23 +604,26 @@ impl Module for Stats {
             Some((self.up.values(), th.ok)),
         );
 
-        if self.cfg.devices {
-            let strip = Rect::new(
-                area.x,
-                area.bottom() - BATTERY_H - GAP - BATTERY_H,
-                area.w,
-                BATTERY_H,
-            );
-            self.draw_devices(cv, strip, snap.as_ref().and_then(|s| s.devices.as_deref()));
-        }
-        // Battery
-        let strip = Rect::new(area.x, area.bottom() - BATTERY_H, area.w, BATTERY_H);
+        // The strips, bottom up: battery, then the optional ones.
+        let mut y = area.bottom() - BATTERY_H;
         self.draw_battery(
             cv,
-            strip,
+            Rect::new(area.x, y, area.w, BATTERY_H),
             snap.as_ref().and_then(|s| s.power.as_ref()),
             snap.is_some(),
         );
+        if self.cfg.devices {
+            y -= BATTERY_H + GAP;
+            self.draw_devices(
+                cv,
+                Rect::new(area.x, y, area.w, BATTERY_H),
+                snap.as_ref().and_then(|s| s.devices.as_deref()),
+            );
+        }
+        if self.cfg.ai_usage {
+            y -= BATTERY_H + GAP;
+            self.draw_ai(cv, Rect::new(area.x, y, area.w, BATTERY_H));
+        }
     }
 }
 
@@ -621,7 +713,7 @@ mod tests {
                 config: &self.cfg,
             };
             self.m
-                .draw_expanded(&mut cv, Rect::new(0.0, 0.0, 372.0, 226.0), &dx);
+                .draw_expanded(&mut cv, Rect::new(0.0, 0.0, 372.0, 264.0), &dx);
             assert!(list.is_balanced());
             list.cmds
                 .iter()
@@ -641,7 +733,7 @@ mod tests {
                 config: &self.cfg,
             };
             self.m
-                .draw_expanded(&mut cv, Rect::new(0.0, 0.0, 372.0, 226.0), &dx);
+                .draw_expanded(&mut cv, Rect::new(0.0, 0.0, 372.0, 264.0), &dx);
             list.cmds
                 .iter()
                 .filter(|c| matches!(c, DrawCmd::Shape { .. }))
@@ -953,9 +1045,11 @@ mod tests {
         // Switched off: no strip and a shorter page.
         let mut off = T::new();
         off.m.cfg.devices = false;
+        off.m.cfg.ai_usage = false;
         off.feed(T::snap(Some(10.0)));
         assert!(!off.texts().contains(&"Devices".to_string()));
         assert_eq!(off.m.expanded_size().h, 232.0);
+        t.m.cfg.ai_usage = false;
         assert_eq!(t.m.expanded_size().h, 232.0 + 38.0);
     }
 
@@ -975,5 +1069,53 @@ mod tests {
                 "{last:?}"
             );
         }
+    }
+
+    fn ai(t: &mut T, messages: u32, out: u64, last_at: i64, now_unix: i64) {
+        t.env.unix = now_unix;
+        let ev = Event::new(
+            crate::events::Source::Local,
+            EventKind::AiUsage(Totals {
+                input: 1_200_000,
+                output: out,
+                messages,
+                last_at,
+            }),
+        );
+        let mut cx = cx!(t);
+        t.m.on_event(&ev, &mut cx);
+    }
+
+    #[test]
+    fn the_claude_code_line_and_chip_follow_the_logs() {
+        let mut t = T::new();
+        assert!(t.texts().contains(&"…".to_string()), "nothing heard yet");
+        assert_eq!(t.m.chip_width(), None);
+        // Quiet today.
+        ai(&mut t, 0, 0, 0, 1_000);
+        assert!(t.texts().contains(&"Nothing today".to_string()));
+        assert_eq!(t.m.chip_width(), None);
+        // Working: the logs grew a few seconds ago.
+        ai(&mut t, 3, 84_000, 990, 1_000);
+        let tx = t.texts();
+        assert!(tx.contains(&"Claude Code".to_string()), "{tx:?}");
+        assert!(
+            tx.contains(&"84k out · 1.2M in · 3 messages today".to_string()),
+            "{tx:?}"
+        );
+        assert_eq!(t.m.chip_width(), Some(AI_CHIP_W));
+        // It asks to be woken when the chip should go, and then hides it.
+        let wake = t.m.next_wake(t.now, &t.env).unwrap();
+        assert!((wake - t.now - 80.5).abs() < 1e-6, "{wake}");
+        t.env.unix = 1_000 + 91;
+        let mut cx = cx!(t);
+        t.m.on_tick(&mut cx);
+        assert_eq!(t.m.chip_width(), None);
+        assert_eq!(t.m.next_wake(t.now, &t.env), None);
+        // Switched off: no line, no chip.
+        ai(&mut t, 3, 84_000, 1_090, 1_100);
+        t.m.cfg.ai_usage = false;
+        assert_eq!(t.m.chip_width(), None);
+        assert!(!t.texts().contains(&"Claude Code".to_string()));
     }
 }

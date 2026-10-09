@@ -496,6 +496,9 @@ pub struct StatsCfg {
     /// A strip with the connected Bluetooth devices and their batteries (read every few seconds
     /// while the page is on screen).
     pub devices: bool,
+    /// Claude Code's token use today (read from its own session logs, nothing is sent anywhere):
+    /// a line on this page and a chip on the pill while it is working.
+    pub ai_usage: bool,
 }
 
 impl Default for StatsCfg {
@@ -507,6 +510,7 @@ impl Default for StatsCfg {
             net_bits: false,
             battery_hud: true,
             devices: true,
+            ai_usage: true,
         }
     }
 }
@@ -1213,6 +1217,7 @@ gpu = true                     # read the GPU utilisation counters too (the dear
 net_bits = false               # network speeds in Mbps instead of MB/s
 battery_hud = true              # a short banner when the charger is plugged in or removed, and when the battery is full
 devices = true                  # a strip with connected Bluetooth devices and their batteries (read while the page is open)
+ai_usage = true                # Claude Code's token use today, read from ~/.claude/projects (never sent anywhere): a line here and a chip while it works
 
 [control]
 enabled = true                 # volume, brightness, Wi-Fi, Bluetooth, a snip button and Focus; see docs/CONTROL.md

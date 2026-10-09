@@ -306,6 +306,8 @@ pub enum EventKind {
     /// The PC's power source or battery level changed (sent by Windows' power notifications, not
     /// by polling).
     Power(PowerStatus),
+    /// Claude Code's token use today, from its own session logs (sent when they grow).
+    AiUsage(crate::aiusage::Totals),
     /// The command centre's controls, as read (answer to `ControlCmd::Refresh` and to changes).
     Control(Arc<ControlState>),
     /// The state of the iPhone link.
@@ -336,13 +338,14 @@ pub enum Kind {
     DownloadDone,
     Stats,
     Power,
+    AiUsage,
     Control,
     PhoneLink,
     Inbound,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 21] = [
+    pub const ALL: [Kind; 22] = [
         Kind::ConfigChanged,
         Kind::ThemeChanged,
         Kind::Suspended,
@@ -361,6 +364,7 @@ impl Kind {
         Kind::DownloadDone,
         Kind::Stats,
         Kind::Power,
+        Kind::AiUsage,
         Kind::Control,
         Kind::PhoneLink,
         Kind::Inbound,
@@ -388,6 +392,7 @@ impl EventKind {
             EventKind::DownloadDone(_) => Kind::DownloadDone,
             EventKind::Stats(_) => Kind::Stats,
             EventKind::Power(_) => Kind::Power,
+            EventKind::AiUsage(_) => Kind::AiUsage,
             EventKind::Control(_) => Kind::Control,
             EventKind::PhoneLink(_) => Kind::PhoneLink,
             EventKind::Inbound(_) => Kind::Inbound,
@@ -501,6 +506,7 @@ mod tests {
                 power: None,
                 devices: None,
             })),
+            EventKind::AiUsage(crate::aiusage::Totals::default()),
             EventKind::Power(PowerStatus {
                 battery: BatteryInfo {
                     percent: 50,
