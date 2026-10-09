@@ -28,7 +28,7 @@ matter right now (a microphone in use, a timer, the next meeting, a download, yo
 | **Calendar** | Your ICS feeds (Outlook, Google, iCloud): month grid, agenda, a **Join** button, a countdown chip | [`docs/CALENDAR_AND_FOCUS.md`](docs/CALENDAR_AND_FOCUS.md) |
 | **Focus** | Pomodoro timer with a task list and a stopwatch | same |
 | **Live** | A chip while a program uses the microphone or camera, quick timers, browser downloads in progress | [`docs/LIVE.md`](docs/LIVE.md) |
-| **Stats** | CPU, memory, GPU, network and battery, with a minute of history (measured only while the page is open), connected Bluetooth devices with their batteries, a chip while Claude Code works (from its own logs, nothing sent anywhere), and a banner when the charger is plugged in or the battery is full | [`docs/STATS.md`](docs/STATS.md) |
+| **Stats** | CPU, memory, GPU, network and battery, with a minute of history (measured only while the page is open), connected Bluetooth devices with their batteries, a pop-up when your Claude plan limit is nearly used up (opt-in), and a banner when the charger is plugged in or the battery is full | [`docs/STATS.md`](docs/STATS.md) |
 | **Controls** | Volume, brightness, Wi-Fi, Bluetooth, a snip button, Keep awake, microphone mute, Windows' Focus state (read only) | [`docs/CONTROL.md`](docs/CONTROL.md) |
 | **iPhone link** (no page) | iOS Shortcuts send clipboard text, files and banners; banners appear as notifications marked "· iPhone". Tray: *Copy iPhone token* / *New iPhone token* | [`docs/IPHONE_SHORTCUTS.md`](docs/IPHONE_SHORTCUTS.md) |
 | **Clock** | Time, date, week number | |

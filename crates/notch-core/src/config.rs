@@ -498,12 +498,13 @@ pub struct StatsCfg {
     /// A strip with the connected Bluetooth devices and their batteries (read every few seconds
     /// while the page is on screen).
     pub devices: bool,
-    /// Claude Code's token use today (read from its own session logs, nothing is sent anywhere):
-    /// a line on this page and a chip on the pill while it is working.
+    /// Watch Claude Code's own session logs (nothing is sent anywhere) to know when it is working;
+    /// that is what makes the limits below get asked for, and only then.
     pub ai_usage: bool,
-    /// Claude's real plan limits (the 5-hour and weekly bars). **Off by default**: it reads the
-    /// login token Claude Code keeps in `~/.claude/.credentials.json` and sends it to
-    /// api.anthropic.com, an undocumented endpoint, a few times an hour while the page is open.
+    /// A banner when your Claude plan's 5-hour or weekly limit passes 80 % and 95 %. **Off by
+    /// default**: it reads the login token Claude Code keeps in `~/.claude/.credentials.json` and
+    /// sends it to api.anthropic.com (an undocumented endpoint), at most once a minute, and only
+    /// while Claude Code is working.
     pub ai_limits: bool,
 }
 
@@ -1217,8 +1218,8 @@ gpu = true                     # read the GPU utilisation counters too (the dear
 net_bits = false               # network speeds in Mbps instead of MB/s
 battery_hud = true              # a short banner when the charger is plugged in or removed, and when the battery is full
 devices = true                  # a strip with connected Bluetooth devices and their batteries (read while the page is open)
-ai_usage = true                # Claude Code's token use today, read from ~/.claude/projects (never sent anywhere): a line here and a chip while it works
-ai_limits = false              # Claude's real 5-hour and weekly limits: reads the login token in ~/.claude/.credentials.json and sends it to api.anthropic.com (undocumented endpoint) while this page is open
+ai_usage = true                # watch Claude Code's own logs (~/.claude/projects, nothing sent anywhere) to know when it is working
+ai_limits = false              # a banner when your Claude 5-hour or weekly limit passes 80 % and 95 %: reads the login token in ~/.claude/.credentials.json and sends it to api.anthropic.com (undocumented), only while Claude Code works
 
 [control]
 enabled = true                 # volume, brightness, Wi-Fi, Bluetooth, a snip button and Focus; see docs/CONTROL.md

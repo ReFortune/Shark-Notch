@@ -121,6 +121,18 @@ impl Credentials {
     }
 }
 
+/// "2 h 10 min", "45 min", "now": how long until `at`.
+pub fn fmt_until(at: i64, now: i64) -> String {
+    let mins = (at - now).max(0) / 60;
+    match (mins / 60, mins % 60) {
+        (0, 0) => "now".to_string(),
+        (0, m) => format!("{m} min"),
+        (h, 0) if h < 48 => format!("{h} h"),
+        (h, m) if h < 48 => format!("{h} h {m} min"),
+        (h, _) => format!("{} d {} h", h / 24, h % 24),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,5 +196,20 @@ mod tests {
         // No expiry given: not assumed to have run out.
         let c = Credentials::parse(r#"{"claudeAiOauth":{"accessToken":"t"}}"#).unwrap();
         assert!(!c.expired(i64::MAX / 2));
+    }
+
+    #[test]
+    fn times_until_a_reset_read_naturally() {
+        for (secs, s) in [
+            (0, "now"),
+            (59, "now"),
+            (60, "1 min"),
+            (3600, "1 h"),
+            (7800, "2 h 10 min"),
+            (3 * 86_400 + 7200, "3 d 2 h"),
+        ] {
+            assert_eq!(fmt_until(1_000 + secs, 1_000), s, "{secs}");
+        }
+        assert_eq!(fmt_until(5, 1_000), "now", "already past");
     }
 }

@@ -8,15 +8,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::aiusage::{Totals, fmt_tokens};
-use crate::claudelimits::LimitsState;
+use crate::aiusage::Totals;
+use crate::claudelimits::{LimitsState, fmt_until};
 use crate::color::Color;
 use crate::config::{Config, StatsCfg};
 use crate::draw::{Align, Canvas, Text, TextStyle, Weight};
 use crate::events::{BtDevice, Event, EventKind, EventMask, Kind, PowerStatus, StatsSnapshot};
 use crate::geom::{Rect, Size};
 use crate::icons::Icon;
-use crate::module::{Command, Cx, DrawCx, Env, Module, ModuleId, StatsCmd, Visibility};
+use crate::module::{Command, Cx, DrawCx, Module, ModuleId, StatsCmd, Visibility};
 use crate::stats::{History, fmt_memory, fmt_rate, fmt_remaining};
 
 /// Samples shown per chart (a minute at the default one reading per second).
@@ -25,8 +25,6 @@ const GAP: f32 = 8.0;
 const BATTERY_H: f32 = 30.0;
 /// Bluetooth devices named in the strip (the rest are left out).
 const MAX_DEVICES: usize = 3;
-/// Width of the pill chip that says Claude Code is working.
-const AI_CHIP_W: f32 = 60.0;
 /// The network chart never zooms in on background noise: its scale is at least this (bytes/s).
 const NET_FLOOR: f32 = 128.0 * 1024.0;
 /// How long the plug-in / full-charge banner stays.
@@ -39,11 +37,17 @@ pub fn create(cfg: &Config) -> Option<Box<dyn Module>> {
 }
 
 /// What the short banner announces.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Banner {
     Plugged(PowerStatus),
     Unplugged(PowerStatus),
     Full(PowerStatus),
+    /// A Claude limit is nearly used up: `weekly` or the 5-hour one, how much, when it starts over.
+    Limit {
+        weekly: bool,
+        used: f32,
+        resets_at: i64,
+    },
 }
 
 pub struct Stats {
@@ -59,9 +63,10 @@ pub struct Stats {
     banner: Option<Banner>,
     /// Claude Code's token use today, as last reported, and whether it is working right now.
     ai: Option<Totals>,
-    ai_chip: bool,
     /// Claude's plan limits, as last read (opt-in; asked for when Claude Code starts working).
     limits: Option<Arc<LimitsState>>,
+    /// Per window (5 hours, week): the level already announced (0, 80 %, 95 %) and its reset time.
+    warned: [(u8, i64); 2],
     suspended: bool,
 }
 
@@ -90,8 +95,8 @@ impl Stats {
             power: None,
             banner: None,
             ai: None,
-            ai_chip: false,
             limits: None,
+            warned: [(0, 0); 2],
             suspended: false,
         }
     }
@@ -123,12 +128,43 @@ impl Stats {
     }
 
     /// Is Claude Code working (its logs grew within the last minute and a half)?
-    fn refresh_ai_chip(&mut self, cx: &mut Cx) {
-        let active = self
-            .ai
-            .is_some_and(|t| t.last_at > 0 && cx.env.unix - t.last_at < Self::AI_ACTIVE_SECS);
-        if active != self.ai_chip {
-            self.ai_chip = active;
+    fn ai_working(&self, unix: i64) -> bool {
+        self.ai
+            .is_some_and(|t| t.last_at > 0 && unix - t.last_at < Self::AI_ACTIVE_SECS)
+    }
+
+    /// The limits just arrived: say so when one has crossed 80 % or 95 % since it was last looked
+    /// at. Each level is announced once per window; a window that starts over begins again.
+    fn check_limits(&mut self, cx: &mut Cx) {
+        let Some(LimitsState::Known(l)) = self.limits.as_deref().cloned() else {
+            return;
+        };
+        let mut best: Option<Banner> = None;
+        for (i, win) in [l.five_hour, l.seven_day].into_iter().enumerate() {
+            let Some(w) = win else { continue };
+            let level = if w.used >= 95.0 {
+                2
+            } else {
+                u8::from(w.used >= 80.0)
+            };
+            let (seen, seen_reset) = self.warned[i];
+            let fresh_window = seen_reset != 0 && w.resets_at != 0 && w.resets_at != seen_reset;
+            let before = if fresh_window { 0 } else { seen };
+            self.warned[i] = (level, w.resets_at);
+            if level > before {
+                let b = Banner::Limit {
+                    weekly: i == 1,
+                    used: w.used,
+                    resets_at: w.resets_at,
+                };
+                if best.is_none_or(|x| matches!(x, Banner::Limit { used, .. } if used < w.used)) {
+                    best = Some(b);
+                }
+            }
+        }
+        if let Some(b) = best.filter(|_| !self.suspended) {
+            self.banner = Some(b);
+            cx.peek(BANNER_SECS + 1.5);
             cx.request_redraw();
         }
     }
@@ -206,16 +242,49 @@ impl Stats {
     /// How long Claude Code counts as "working" after its logs last grew.
     const AI_ACTIVE_SECS: i64 = 90;
 
-    /// What the pill chip says: the 5-hour limit's use when it is known, else today's output tokens.
-    fn chip_text(&self) -> String {
-        let five = self.cfg.ai_limits.then_some(match self.limits.as_deref() {
-            Some(LimitsState::Known(l)) => l.five_hour,
-            _ => None,
-        });
-        match five.flatten() {
-            Some(w) => format!("{:.0}%", w.used),
-            None => fmt_tokens(self.ai.map_or(0, |t| t.output)),
+    /// "Claude 5-hour limit / 92% used · resets in 1 h 20 min" with a bar.
+    fn draw_limit(
+        &self,
+        cv: &mut Canvas,
+        area: Rect,
+        weekly: bool,
+        used: f32,
+        resets_at: i64,
+        unix: i64,
+    ) {
+        let th = *cv.theme;
+        let color = if used >= 95.0 { th.danger } else { th.warn };
+        let tile = Rect::new(area.x, area.y, area.h, area.h);
+        cv.squircle(tile, 8.0, th.surface_hi);
+        cv.icon(Icon::Pulse, tile.inset(tile.w * 0.22), color);
+        let x = tile.right() + 12.0;
+        let w = (area.right() - x).max(0.0);
+        cv.text(
+            Rect::new(x, area.y + 2.0, w, 18.0),
+            if weekly {
+                "Claude weekly limit"
+            } else {
+                "Claude 5-hour limit"
+            },
+            TextStyle::new(13.5, Weight::SemiBold),
+            th.text,
+        );
+        let mut sub = format!("{used:.0}% used");
+        if resets_at > 0 {
+            sub.push_str(&format!(" · resets in {}", fmt_until(resets_at, unix)));
         }
+        cv.text(
+            Rect::new(x, area.y + 21.0, w, 15.0),
+            sub,
+            TextStyle::caption(),
+            th.text_dim,
+        );
+        cv.bar(
+            Rect::new(x, area.bottom() - 8.0, w, 5.0),
+            used / 100.0,
+            th.surface_hi,
+            color,
+        );
     }
 
     fn draw_devices(&self, cv: &mut Canvas, r: Rect, devices: Option<&[BtDevice]>) {
@@ -374,49 +443,19 @@ impl Module for Stats {
         Size::new(424.0, 232.0 + self.extra_height())
     }
 
-    fn chip_width(&self) -> Option<f32> {
-        (self.cfg.ai_usage && self.ai_chip).then_some(AI_CHIP_W)
-    }
-
-    fn chip_priority(&self) -> i32 {
-        25
-    }
-
-    fn draw_chip(&mut self, cv: &mut Canvas, area: Rect, _dx: &DrawCx) {
-        let th = *cv.theme;
-        let icon = Rect::new(area.x, area.center().y - 8.0, 16.0, 16.0);
-        cv.icon(Icon::Pulse, icon, th.accent);
-        cv.text(
-            Rect::new(
-                icon.right() + 4.0,
-                area.y,
-                area.right() - icon.right() - 4.0,
-                area.h,
-            ),
-            self.chip_text(),
-            TextStyle::new(12.0, Weight::SemiBold).tabular(),
-            th.text,
-        );
-    }
-
-    /// When the chip should go away: a moment after Claude Code's logs stopped growing.
-    fn next_wake(&self, now: f64, env: &Env) -> Option<f64> {
-        let last = self.ai.filter(|_| self.ai_chip)?.last_at;
-        Some(now + (last + Self::AI_ACTIVE_SECS - env.unix).max(0) as f64 + 0.5)
-    }
-
-    fn on_tick(&mut self, cx: &mut Cx) {
-        self.refresh_ai_chip(cx);
-    }
-
     fn peek_size(&self) -> Option<Size> {
         Some(Size::new(296.0, 64.0))
     }
 
-    fn draw_peek(&mut self, cv: &mut Canvas, area: Rect, _dx: &DrawCx) {
+    fn draw_peek(&mut self, cv: &mut Canvas, area: Rect, dx: &DrawCx) {
         let th = *cv.theme;
         let Some(b) = self.banner else { return };
         let (title, p) = match b {
+            Banner::Limit {
+                weekly,
+                used,
+                resets_at,
+            } => return self.draw_limit(cv, area, weekly, used, resets_at, dx.env.unix),
             Banner::Plugged(p) => ("Charger connected", p),
             Banner::Unplugged(p) => ("On battery", p),
             Banner::Full(p) => ("Fully charged", p),
@@ -484,18 +523,16 @@ impl Module for Stats {
             }
             EventKind::AiLimits(s) => {
                 self.limits = Some(s.clone());
-                cx.request_redraw();
+                self.check_limits(cx);
             }
             EventKind::Power(p) => self.on_power(*p, cx),
             EventKind::Suspended(on) => self.suspended = *on,
             EventKind::AiUsage(t) => {
                 self.ai = Some(*t);
-                self.refresh_ai_chip(cx);
                 // Working now: ask for the limits (the service answers at most once a minute).
-                if self.ai_chip && self.cfg.ai_limits {
+                if self.cfg.ai_limits && self.ai_working(cx.env.unix) {
                     cx.command(Command::ClaudeLimits);
                 }
-                cx.request_redraw();
             }
             _ => {}
         }
@@ -1085,44 +1122,6 @@ mod tests {
         t.m.on_event(&ev, &mut cx);
     }
 
-    #[test]
-    fn claude_code_shows_only_a_chip_while_it_works_and_never_a_permanent_line() {
-        let mut t = T::new();
-        assert_eq!(t.m.chip_width(), None);
-        // Quiet today: nothing on the pill, and nothing on the page either way.
-        ai(&mut t, 0, 0, 0, 1_000);
-        assert_eq!(t.m.chip_width(), None);
-        // Working: the logs grew a few seconds ago.
-        ai(&mut t, 3, 84_000, 990, 1_000);
-        assert_eq!(t.m.chip_width(), Some(AI_CHIP_W));
-        assert_eq!(
-            t.m.chip_text(),
-            "84k",
-            "today's output tokens without the limits"
-        );
-        assert!(
-            !t.texts().iter().any(|s| s.contains("Claude")),
-            "no always-on line on the page"
-        );
-        assert_eq!(
-            t.m.expanded_size().h,
-            232.0 + 38.0,
-            "only the devices strip is extra"
-        );
-        // It asks to be woken when the chip should go, and then hides it.
-        let wake = t.m.next_wake(t.now, &t.env).unwrap();
-        assert!((wake - t.now - 80.5).abs() < 1e-6, "{wake}");
-        t.env.unix = 1_000 + 91;
-        let mut cx = cx!(t);
-        t.m.on_tick(&mut cx);
-        assert_eq!(t.m.chip_width(), None);
-        assert_eq!(t.m.next_wake(t.now, &t.env), None);
-        // Switched off: no chip.
-        ai(&mut t, 3, 84_000, 1_090, 1_100);
-        t.m.cfg.ai_usage = false;
-        assert_eq!(t.m.chip_width(), None);
-    }
-
     fn limits_event(t: &mut T, state: LimitsState) {
         let ev = Event::new(
             crate::events::Source::Local,
@@ -1132,13 +1131,91 @@ mod tests {
         t.m.on_event(&ev, &mut cx);
     }
 
-    #[test]
-    fn the_chip_shows_the_five_hour_limit_when_known_and_asks_for_it_only_while_working() {
+    fn known(five: f32, week: f32, reset5: i64, reset7: i64) -> LimitsState {
         use crate::claudelimits::{Limits, Window};
+        LimitsState::Known(Limits {
+            five_hour: Some(Window {
+                used: five,
+                resets_at: reset5,
+            }),
+            seven_day: Some(Window {
+                used: week,
+                resets_at: reset7,
+            }),
+        })
+    }
+
+    /// Feed limits; returns whether a banner was asked for.
+    fn banner_for(t: &mut T, state: LimitsState) -> bool {
+        t.out.shell.clear();
+        limits_event(t, state);
+        !t.out.shell.is_empty()
+    }
+
+    #[test]
+    fn a_limit_nearly_used_up_gets_one_banner_per_level_per_window() {
         let mut t = T::new();
-        // Off (the default): never asked.
+        assert!(
+            !banner_for(&mut t, known(10.0, 20.0, 5_000, 90_000)),
+            "plenty left"
+        );
+        assert!(banner_for(&mut t, known(81.0, 20.0, 5_000, 90_000)), "80 %");
+        assert!(
+            !banner_for(&mut t, known(83.0, 20.0, 5_000, 90_000)),
+            "same level: quiet"
+        );
+        assert!(banner_for(&mut t, known(96.0, 20.0, 5_000, 90_000)), "95 %");
+        assert!(!banner_for(&mut t, known(99.0, 20.0, 5_000, 90_000)));
+        // The window starts over (new reset time) and fills again: announced again.
+        assert!(!banner_for(&mut t, known(5.0, 20.0, 23_000, 90_000)));
+        assert!(banner_for(&mut t, known(85.0, 20.0, 23_000, 90_000)));
+        // The other limit has its own levels.
+        assert!(
+            banner_for(&mut t, known(85.0, 82.0, 23_000, 90_000)),
+            "the week"
+        );
+        // A reading that says nothing useful is not a banner.
+        for state in [
+            LimitsState::SignedOut,
+            LimitsState::Expired,
+            LimitsState::Failed,
+        ] {
+            assert!(!banner_for(&mut t, state));
+        }
+    }
+
+    #[test]
+    fn the_limit_banner_names_the_limit_the_use_and_the_reset() {
+        let mut t = T::new();
+        limits_event(&mut t, known(92.4, 10.0, 1_000 + 80 * 60, 0));
+        t.env.unix = 1_000;
+        let th = Theme::default();
+        let mut list = DrawList::new();
+        let (env, cfg) = (t.env, Config::default());
+        t.m.draw_peek(
+            &mut Canvas::new(&mut list, &th),
+            Rect::new(0.0, 0.0, 296.0, 44.0),
+            &DrawCx {
+                now: 0.0,
+                env: &env,
+                config: &cfg,
+            },
+        );
+        let tx = texts(&list);
+        assert!(tx.contains(&"Claude 5-hour limit".to_string()), "{tx:?}");
+        assert!(
+            tx.contains(&"92% used · resets in 1 h 20 min".to_string()),
+            "{tx:?}"
+        );
+        assert!(list.is_balanced());
+    }
+
+    #[test]
+    fn nothing_is_shown_while_a_game_is_in_front_and_the_limits_are_asked_for_only_while_working() {
+        let mut t = T::new();
+        // Off (the default): never asked, whatever Claude Code does.
         assert!(!StatsCfg::default().ai_limits);
-        ai(&mut t, 3, 84_000, 990, 1_000);
+        ai(&mut t, 3, 84_000, 995, 1_000);
         assert!(!t.out.commands.contains(&Command::ClaudeLimits));
         // On: asked when the logs say it is working, not when it has been quiet.
         t.m.cfg.ai_limits = true;
@@ -1147,26 +1224,15 @@ mod tests {
         t.out.commands.clear();
         ai(&mut t, 3, 84_100, 100, 1_000);
         assert!(!t.out.commands.contains(&Command::ClaudeLimits), "quiet");
-        ai(&mut t, 3, 84_100, 995, 1_000);
-        limits_event(
-            &mut t,
-            LimitsState::Known(Limits {
-                five_hour: Some(Window {
-                    used: 42.4,
-                    resets_at: 0,
-                }),
-                seven_day: None,
-            }),
-        );
-        assert_eq!(t.m.chip_text(), "42%");
-        // Any other state falls back to tokens.
-        for state in [
-            LimitsState::SignedOut,
-            LimitsState::Expired,
-            LimitsState::Failed,
-        ] {
-            limits_event(&mut t, state);
-            assert_eq!(t.m.chip_text(), "84.1k");
-        }
+        // A game in front: counted as seen, no banner.
+        limits_event_suspended(&mut t);
+        assert!(!banner_for(&mut t, known(99.0, 99.0, 5_000, 90_000)));
+        assert!(t.m.chip_width().is_none(), "no pill chip any more");
+    }
+
+    fn limits_event_suspended(t: &mut T) {
+        let ev = Event::new(crate::events::Source::Local, EventKind::Suspended(true));
+        let mut cx = cx!(t);
+        t.m.on_event(&ev, &mut cx);
     }
 }
