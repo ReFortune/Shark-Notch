@@ -132,6 +132,8 @@ pub struct SelfTest {
     /// The modules (DLLs) loaded so far, to report which ones each step brought in.
     modules_seen: std::collections::HashSet<String>,
     last_act: String,
+    /// How many times the current check has asked to be run again (see `Act::ShelfCheck`).
+    retries: u32,
     next: usize,
     pub finished: bool,
     pub exit_code: i32,
@@ -807,6 +809,7 @@ pub fn begin(a: &mut App) {
         ),
         modules_seen: stall::module_names().into_iter().collect(),
         last_act: "start-up".into(),
+        retries: 0,
         next: 0,
         finished: false,
         exit_code: 0,
@@ -1287,6 +1290,15 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
         Act::ShelfCheck => {
             let hovers = a.bus_counts[Kind::DragHover as usize] - st.shelf_mark.0;
             let drops = a.bus_counts[Kind::FileDropped as usize] - st.shelf_mark.1;
+            // The shell is asked for thumbnails on a worker thread and loads a dozen DLLs the first
+            // time: on a cold virtual machine that took over a second. Look again for a few seconds.
+            if drops == 0 && st.retries < 16 {
+                st.retries += 1;
+                st.next -= 1;
+                st.shift += 0.25;
+                return;
+            }
+            st.retries = 0;
             match (&a.last_files, drops) {
                 (Some(files), d) if d >= 1 && files.len() == 2 => {
                     let names: Vec<String> = files.iter().map(|f| f.name.to_string()).collect();
@@ -1893,6 +1905,15 @@ fn run(a: &mut App, st: &mut SelfTest, act: Act, now: f64) {
             }
         }
         Act::PrivacyOffCheck => {
+            // The chip's last frames may still be on their way on a slow machine: the GPU can only
+            // be released once they are drawn. Look again for a few seconds before judging.
+            if a.opts.registry_probe && (a.burst || a.animating()) && st.retries < 12 {
+                st.retries += 1;
+                st.next -= 1;
+                st.shift += 0.25;
+                return;
+            }
+            st.retries = 0;
             if a.opts.registry_probe {
                 a.maybe_release_gpu(now);
                 let owners = a.host.chip_owners();
